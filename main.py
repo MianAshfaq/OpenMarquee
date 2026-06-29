@@ -5,6 +5,8 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import logging
+from logging.handlers import RotatingFileHandler
 import mimetypes
 import os
 import secrets
@@ -27,18 +29,23 @@ UPLOADS = ROOT / "uploads"
 STATIC = ROOT / "static"
 SECRET_PATH = ROOT / "data" / ".secret_key"
 BOOTSTRAP_PATH = ROOT / "data" / "admin-bootstrap.txt"
+LOG_DIR = ROOT / "logs"
+LOG_DIR.mkdir(exist_ok=True)
 UPLOADS.mkdir(exist_ok=True)
 DB_PATH.parent.mkdir(exist_ok=True)
 
 app = FastAPI(title="OpenMarquee", version="0.1.0")
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 app.mount("/media", StaticFiles(directory=UPLOADS), name="media")
+APP_STARTED_AT = int(time.time())
 PING_CACHE: dict[str, tuple[int, bool]] = {}
 SESSION_COOKIE = "openmarquee_session"
 SESSION_TTL_SECONDS = 60 * 60 * 12
 MAX_UPLOAD_BYTES = int(os.getenv("OPENMARQUEE_MAX_UPLOAD_BYTES", str(1024 * 1024 * 1024)))
 ADMIN_USERNAME = os.getenv("OPENMARQUEE_ADMIN_USERNAME", "admin").strip() or "admin"
 TRUSTED_HOSTS = {host.strip().lower() for host in os.getenv("OPENMARQUEE_TRUSTED_HOSTS", "").split(",") if host.strip()}
+COOKIE_SECURE = os.getenv("OPENMARQUEE_COOKIE_SECURE", "0").strip().lower() in {"1", "true", "yes", "on"}
+PAIRING_TTL_SECONDS = 60 * 10
 URL_MEDIA_KINDS = {
     "webpage",
     "dashboard",
@@ -81,6 +88,43 @@ SCREEN_RUNTIMES = {
     "windows-kiosk",
     "chromeos-kiosk",
 }
+OUI_VENDOR_MAP = {
+    "00:1A:11": "Google",
+    "3C:5A:B4": "Google",
+    "B8:27:EB": "Raspberry Pi",
+    "DC:A6:32": "Raspberry Pi",
+    "E4:5F:01": "Raspberry Pi",
+    "28:6A:BA": "Samsung",
+    "8C:77:12": "Samsung",
+    "A8:F2:74": "Samsung",
+    "64:BC:0C": "LG",
+    "88:C9:D0": "LG",
+    "D8:BB:2C": "Sony",
+    "70:26:05": "Sony",
+    "9C:4E:36": "TCL",
+    "D0:37:45": "Hisense",
+    "50:2D:F4": "Amazon",
+}
+VENDOR_BRAND_MAP = {
+    "google": "google-tv",
+    "raspberry pi": "raspberry-pi",
+    "samsung": "samsung",
+    "lg": "lg",
+    "sony": "sony",
+    "tcl": "tcl",
+    "hisense": "hisense",
+    "amazon": "amazon-fire-tv",
+}
+TEXT_ANIMATIONS = {"none", "fade", "slide-up", "slide-left", "zoom", "ticker", "pulse"}
+TEXT_THEMES = {"midnight", "emerald", "sunset", "royal", "mono"}
+
+
+logger = logging.getLogger("openmarquee")
+if not logger.handlers:
+    logger.setLevel(logging.INFO)
+    handler = RotatingFileHandler(LOG_DIR / "openmarquee.log", maxBytes=1_000_000, backupCount=5, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logger.addHandler(handler)
 
 
 def load_secret_key() -> str:
@@ -133,6 +177,8 @@ def init_db() -> None:
                 model TEXT,
                 runtime TEXT NOT NULL DEFAULT 'browser',
                 ip_address TEXT,
+                mac_address TEXT,
+                vendor_name TEXT,
                 notes TEXT,
                 last_seen INTEGER,
                 created_at INTEGER NOT NULL
@@ -154,6 +200,10 @@ def init_db() -> None:
             conn.execute("ALTER TABLE screens ADD COLUMN model TEXT")
         if "runtime" not in columns:
             conn.execute("ALTER TABLE screens ADD COLUMN runtime TEXT NOT NULL DEFAULT 'browser'")
+        if "mac_address" not in columns:
+            conn.execute("ALTER TABLE screens ADD COLUMN mac_address TEXT")
+        if "vendor_name" not in columns:
+            conn.execute("ALTER TABLE screens ADD COLUMN vendor_name TEXT")
         media_columns = {row["name"] for row in conn.execute("PRAGMA table_info(media)").fetchall()}
         if "source_url" not in media_columns:
             conn.execute("ALTER TABLE media ADD COLUMN source_url TEXT")
@@ -364,6 +414,44 @@ def screen_network_reachable(ip_address: str | None) -> tuple[bool, str]:
     return reachable, "reachable" if reachable else "unreachable"
 
 
+def lookup_arp_entry(ip_address: str | None) -> tuple[str | None, str | None]:
+    if not ip_address:
+        return None, None
+    try:
+        subprocess.run(
+            ["ping", "-n", "1", "-w", "700", ip_address],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    try:
+        result = subprocess.run(["arp", "-a", ip_address], capture_output=True, text=True, check=False, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None, None
+    for raw_line in result.stdout.splitlines():
+        line = raw_line.strip()
+        if ip_address not in line:
+            continue
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        mac_address = parts[1].replace("-", ":").upper()
+        vendor = OUI_VENDOR_MAP.get(mac_address[:8])
+        return mac_address, vendor
+    return None, None
+
+
+def auto_brand_for(ip_address: str | None, current_brand: str) -> tuple[str | None, str | None, str]:
+    mac_address, vendor = lookup_arp_entry(ip_address)
+    next_brand = current_brand
+    if current_brand == "unknown" and vendor:
+        next_brand = VENDOR_BRAND_MAP.get(vendor.lower(), "unknown")
+    return mac_address, vendor, next_brand
+
+
 def discover_network_devices() -> list[dict]:
     devices: dict[str, dict] = {}
     try:
@@ -385,6 +473,7 @@ def discover_network_devices() -> list[dict]:
         devices[ip_address] = {
             "ip_address": ip_address,
             "mac_address": mac_address,
+            "vendor_name": OUI_VENDOR_MAP.get(mac_address.replace("-", ":").upper()[:8]),
             "hostname": "",
             "already_added": ip_address in seen,
             "screen_id": seen.get(ip_address),
@@ -615,6 +704,11 @@ def dashboard(_admin: str = Depends(require_admin)) -> dict:
         screen["player_status"] = "connected" if screen["online"] else "waiting"
         screen["player_status_label"] = "Player connected" if screen["online"] else "Player not connected"
         reachable, network_status = screen_network_reachable(screen.get("ip_address"))
+        live_mac, live_vendor, auto_brand = auto_brand_for(screen.get("ip_address"), screen.get("brand") or "unknown")
+        screen["mac_address"] = live_mac or screen.get("mac_address")
+        screen["vendor_name"] = live_vendor or screen.get("vendor_name")
+        if (screen.get("brand") or "unknown") == "unknown" and auto_brand != "unknown":
+            screen["brand"] = auto_brand
         screen["reachable"] = reachable
         screen["network_status"] = network_status
         screen["network_status_label"] = {
@@ -803,9 +897,10 @@ def create_screen(
     normalized_ip = normalize_ip_address(ip_address)
     cleaned_brand = normalize_brand(brand)
     cleaned_runtime = normalize_runtime(runtime)
+    mac_address, vendor_name, cleaned_brand = auto_brand_for(normalized_ip, cleaned_brand)
     with db() as conn:
         cursor = conn.execute(
-            "INSERT INTO screens(name, code, orientation, brand, model, runtime, ip_address, notes, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO screens(name, code, orientation, brand, model, runtime, ip_address, mac_address, vendor_name, notes, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             (
                 name.strip() or "New screen",
                 code,
@@ -814,6 +909,8 @@ def create_screen(
                 model.strip() or None,
                 cleaned_runtime,
                 normalized_ip,
+                mac_address,
+                vendor_name,
                 notes.strip() or None,
                 int(time.time()),
             ),
@@ -881,9 +978,10 @@ def update_screen(
     normalized_ip = normalize_ip_address(ip_address)
     cleaned_brand = normalize_brand(brand)
     cleaned_runtime = normalize_runtime(runtime)
+    mac_address, vendor_name, cleaned_brand = auto_brand_for(normalized_ip, cleaned_brand)
     with db() as conn:
         cursor = conn.execute(
-            "UPDATE screens SET name=?, orientation=?, brand=?, model=?, runtime=?, ip_address=?, notes=? WHERE id=?",
+            "UPDATE screens SET name=?, orientation=?, brand=?, model=?, runtime=?, ip_address=?, mac_address=?, vendor_name=?, notes=? WHERE id=?",
             (
                 name.strip() or "Unnamed screen",
                 orientation,
@@ -891,6 +989,8 @@ def update_screen(
                 model.strip() or None,
                 cleaned_runtime,
                 normalized_ip,
+                mac_address,
+                vendor_name,
                 notes.strip() or None,
                 screen_id,
             ),

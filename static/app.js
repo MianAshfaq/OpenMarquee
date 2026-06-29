@@ -197,10 +197,12 @@ function screenMeta(screen) {
   const parts = [
     `Pairing code: <strong>${screen.code}</strong>`,
     `Brand: ${escapeHtml(screenBrandLabel(screen.brand || "unknown"))}`,
+    screen.vendor_name ? `Vendor: ${escapeHtml(screen.vendor_name)}` : null,
     screen.model ? `Model: ${escapeHtml(screen.model)}` : null,
     `Runtime: ${escapeHtml(screenRuntimeLabel(screen.runtime || "browser"))}`,
     `Orientation: ${escapeHtml(screen.orientation)}`,
     screen.ip_address ? `IP: ${escapeHtml(screen.ip_address)}` : "IP: Not saved",
+    screen.mac_address ? `MAC: ${escapeHtml(screen.mac_address)}` : null,
     `Playlist: ${escapeHtml(screenPlaylistName(screen))}`,
   ].filter(Boolean);
   if (screen.notes) parts.push(`Notes: ${escapeHtml(screen.notes)}`);
@@ -224,9 +226,9 @@ function overviewScreenCard(screen) {
         <h3>${escapeHtml(screen.name)}</h3>
         <p>${screenMeta(screen)}</p>
         <div class="card-actions">
-          <button class="secondary" onclick="assignOne(${screen.id})"><i class="fa-solid fa-photo-film"></i><span>Assign</span></button>
-          <button class="secondary" onclick="stopOne(${screen.id})"><i class="fa-solid fa-stop"></i><span>Stop</span></button>
-          <button class="secondary" onclick="copyPlayerLink(${screen.id})"><i class="fa-solid fa-link"></i><span>Player link</span></button>
+          <button class="secondary" data-action="assign-screen" data-screen-id="${screen.id}"><i class="fa-solid fa-photo-film"></i><span>Assign</span></button>
+          <button class="secondary" data-action="stop-screen" data-screen-id="${screen.id}"><i class="fa-solid fa-stop"></i><span>Stop</span></button>
+          <button class="secondary" data-action="copy-player-link" data-screen-id="${screen.id}"><i class="fa-solid fa-link"></i><span>Player link</span></button>
         </div>
       </div>
     </article>
@@ -248,11 +250,11 @@ function fleetScreenCard(screen) {
         <h3>${escapeHtml(screen.name)}</h3>
         <p>${screenMeta(screen)}</p>
         <div class="card-actions">
-          <button class="secondary" onclick="assignOne(${screen.id})"><i class="fa-solid fa-play"></i><span>Publish</span></button>
-          <button class="secondary" onclick="stopOne(${screen.id})"><i class="fa-solid fa-stop"></i><span>Stop</span></button>
-          <button class="secondary" onclick="copyPlayerLink(${screen.id})"><i class="fa-solid fa-link"></i><span>Link</span></button>
-          <button class="secondary" onclick="editScreen(${screen.id})"><i class="fa-solid fa-pen"></i><span>Edit</span></button>
-          <button class="secondary danger" onclick="deleteScreen(${screen.id})"><i class="fa-solid fa-trash"></i><span>Delete</span></button>
+          <button class="secondary" data-action="assign-screen" data-screen-id="${screen.id}"><i class="fa-solid fa-play"></i><span>Publish</span></button>
+          <button class="secondary" data-action="stop-screen" data-screen-id="${screen.id}"><i class="fa-solid fa-stop"></i><span>Stop</span></button>
+          <button class="secondary" data-action="copy-player-link" data-screen-id="${screen.id}"><i class="fa-solid fa-link"></i><span>Link</span></button>
+          <button class="secondary" data-action="edit-screen" data-screen-id="${screen.id}"><i class="fa-solid fa-pen"></i><span>Edit</span></button>
+          <button class="secondary danger" data-action="delete-screen" data-screen-id="${screen.id}"><i class="fa-solid fa-trash"></i><span>Delete</span></button>
         </div>
       </div>
     </article>
@@ -273,7 +275,7 @@ function mediaCard(media) {
       <div class="card-body">
         <h3>${escapeHtml(media.name)}</h3>
         <p>${escapeHtml(mediaTypeLabel(media.kind))} - ${media.size ? bytes(media.size) : "Remote source"}</p>
-        <button class="secondary danger" onclick="removeMedia(${media.id})"><i class="fa-solid fa-trash"></i><span>Delete</span></button>
+        <button class="secondary danger" data-action="delete-media" data-media-id="${media.id}"><i class="fa-solid fa-trash"></i><span>Delete</span></button>
       </div>
     </article>
   `;
@@ -290,8 +292,8 @@ function playlistCard(playlist) {
         <p>${escapeHtml(layoutLabel(playlist.layout_mode))} - ${escapeHtml(fitLabel(playlist.fit_mode))}</p>
         <p>${escapeHtml(transitionSummary(playlist))}</p>
         <div class="card-actions">
-          <button class="secondary" onclick="editPlaylist(${playlist.id})"><i class="fa-solid fa-pen"></i><span>Edit</span></button>
-          <button class="secondary danger" onclick="deletePlaylist(${playlist.id})"><i class="fa-solid fa-trash"></i><span>Delete</span></button>
+          <button class="secondary" data-action="edit-playlist" data-playlist-id="${playlist.id}"><i class="fa-solid fa-pen"></i><span>Edit</span></button>
+          <button class="secondary danger" data-action="delete-playlist" data-playlist-id="${playlist.id}"><i class="fa-solid fa-trash"></i><span>Delete</span></button>
         </div>
       </div>
     </article>
@@ -852,6 +854,25 @@ window.removeMedia = async (mediaId) => {
 
 $$(".nav").forEach((item) => { item.onclick = () => go(item.dataset.view); });
 $$("[data-go]").forEach((item) => { item.onclick = () => go(item.dataset.go); });
+document.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-action]");
+  if (!button) return;
+  const screenId = Number(button.dataset.screenId || 0);
+  const playlistId = Number(button.dataset.playlistId || 0);
+  const mediaId = Number(button.dataset.mediaId || 0);
+  try {
+    if (button.dataset.action === "assign-screen" && screenId) await window.assignOne(screenId);
+    if (button.dataset.action === "stop-screen" && screenId) await window.stopOne(screenId);
+    if (button.dataset.action === "copy-player-link" && screenId) await window.copyPlayerLink(screenId);
+    if (button.dataset.action === "edit-screen" && screenId) await window.editScreen(screenId);
+    if (button.dataset.action === "delete-screen" && screenId) await window.deleteScreen(screenId);
+    if (button.dataset.action === "delete-media" && mediaId) await window.removeMedia(mediaId);
+    if (button.dataset.action === "edit-playlist" && playlistId) await window.editPlaylist(playlistId);
+    if (button.dataset.action === "delete-playlist" && playlistId) await window.deletePlaylist(playlistId);
+  } catch (error) {
+    toast(error.message);
+  }
+});
 
 $("#auth-form").onsubmit = async (event) => {
   event.preventDefault();

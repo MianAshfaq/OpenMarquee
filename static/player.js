@@ -152,7 +152,7 @@ function sceneMediaDuration(items) {
 }
 
 function playbackNeedsTimer(items) {
-  return !items.some((item) => ["video", "stream", "iptv", "audio", "youtube"].includes(item.kind));
+  return !items.some((item) => ["video", "stream", "iptv", "audio"].includes(item.kind));
 }
 
 function createIdleScene() {
@@ -237,6 +237,12 @@ function createIframePanel(item) {
   iframe.title = item.name || "Embedded media";
   iframe.src = item.kind === "youtube" ? normalizeYouTubeUrl(item.url) : item.url;
   panel.appendChild(iframe);
+  if (item.kind === "youtube") {
+    const note = document.createElement("div");
+    note.className = "youtube-note";
+    note.textContent = "If the video owner blocks embedding, OpenMarquee will skip to the next item automatically.";
+    panel.appendChild(note);
+  }
   return panel;
 }
 

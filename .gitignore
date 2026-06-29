@@ -5,6 +5,7 @@ __pycache__/
 data/*.db
 data/*.txt
 data/.secret_key
+logs/
 uploads/*
 !uploads/.gitkeep
 .env
