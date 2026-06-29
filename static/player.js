@@ -124,12 +124,16 @@ function normalizeYouTubeUrl(value) {
     let videoId = "";
     if (url.hostname.includes("youtu.be")) {
       videoId = url.pathname.replace("/", "");
+    } else if (url.pathname.startsWith("/shorts/")) {
+      videoId = url.pathname.split("/").filter(Boolean)[1] || "";
+    } else if (url.pathname.startsWith("/embed/")) {
+      videoId = url.pathname.split("/").filter(Boolean)[1] || "";
     } else if (url.hostname.includes("youtube.com")) {
       videoId = url.searchParams.get("v") || url.pathname.split("/").filter(Boolean).pop() || "";
     }
     if (!videoId) return value;
     const origin = encodeURIComponent(window.location.origin);
-    return `https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&mute=0&controls=0&loop=1&playlist=${videoId}&playsinline=1&rel=0&modestbranding=1&enablejsapi=1&origin=${origin}`;
+    return `https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&mute=1&controls=1&loop=1&playlist=${videoId}&playsinline=1&rel=0&modestbranding=1&enablejsapi=1&iv_load_policy=3&origin=${origin}`;
   } catch {
     return value;
   }
@@ -224,11 +228,13 @@ function createVideoPanel(item) {
 
 function createIframePanel(item) {
   const panel = document.createElement("div");
-  panel.className = "panel panel-iframe";
+  panel.className = item.kind === "youtube" ? "panel panel-youtube" : "panel panel-iframe";
   const iframe = document.createElement("iframe");
-  iframe.className = "panel-media panel-iframe-media";
-  iframe.allow = "autoplay; fullscreen; encrypted-media; picture-in-picture";
+  iframe.className = `panel-media panel-iframe-media ${item.kind === "youtube" ? "panel-youtube-media" : ""}`;
+  iframe.allow = "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen";
   iframe.referrerPolicy = "strict-origin-when-cross-origin";
+  iframe.loading = "eager";
+  iframe.title = item.name || "Embedded media";
   iframe.src = item.kind === "youtube" ? normalizeYouTubeUrl(item.url) : item.url;
   panel.appendChild(iframe);
   return panel;

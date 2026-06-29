@@ -90,7 +90,8 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#09110d;col
 .panel-image-media[data-fit="cover"],.panel-video-media[data-fit="cover"]{object-fit:cover}
 .panel-image-media{will-change:transform,filter}
 .panel-iframe-media{border:0;background:#fff}
-.panel-audio,.panel-rss,.panel-iframe{background:linear-gradient(135deg,#0f1b16 0%,#09110d 100%)}
+.panel-youtube-media{background:#000}
+.panel-audio,.panel-rss,.panel-iframe,.panel-youtube{background:linear-gradient(135deg,#0f1b16 0%,#09110d 100%)}
 .audio-mini,.rss-mini{position:relative;z-index:2;height:100%;display:grid;align-content:center;justify-items:center;text-align:center;padding:28px}
 .audio-mini strong,.rss-mini strong{font-size:28px}
 .audio-mini span,.rss-mini span{color:#a8bbb1}
