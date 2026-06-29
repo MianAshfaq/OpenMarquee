@@ -51,12 +51,27 @@ function mediaTypeLabel(kind) {
   }[kind] || kind;
 }
 
-function selectedScreenList() {
-  return state.screens.filter((screen) => selectedScreens.has(screen.id));
+function layoutLabel(mode) {
+  return {
+    full: "Full screen",
+    "split-2": "Split 2",
+    "split-4": "Split 4",
+  }[mode] || "Full screen";
+}
+
+function fitLabel(mode) {
+  return {
+    contain: "Show complete",
+    cover: "Fill screen",
+  }[mode] || "Show complete";
 }
 
 function mediaById(mediaId) {
   return state.media.find((item) => item.id === Number(mediaId));
+}
+
+function selectedScreenList() {
+  return state.screens.filter((screen) => selectedScreens.has(screen.id));
 }
 
 function screenPlaylistName(screen) {
@@ -66,6 +81,10 @@ function screenPlaylistName(screen) {
 
 async function refresh() {
   state = await api("/api/dashboard");
+  for (const playlist of state.playlists) {
+    playlist.layout_mode = playlist.layout_mode || "full";
+    playlist.fit_mode = playlist.fit_mode || "contain";
+  }
   for (const id of [...selectedScreens]) {
     if (!state.screens.some((screen) => screen.id === id)) selectedScreens.delete(id);
   }
@@ -160,8 +179,9 @@ function playlistCard(playlist) {
         <span class="badge">${playlist.items.length} items</span>
         <h3>${escapeHtml(playlist.name)}</h3>
         <p>${duration} seconds per loop</p>
+        <p>${escapeHtml(layoutLabel(playlist.layout_mode))} · ${escapeHtml(fitLabel(playlist.fit_mode))}</p>
         <div class="card-actions">
-          <button class="secondary" onclick="editPlaylist(${playlist.id})">Edit timing</button>
+          <button class="secondary" onclick="editPlaylist(${playlist.id})">Edit playlist</button>
         </div>
       </div>
     </article>
@@ -232,28 +252,51 @@ function screenForm(screen = null) {
   `;
 }
 
-function playlistEditorMarkup(playlist) {
-  const rows = playlist.items.map((item, itemIndex) => {
+function buildPlaylistRows(selectedItems) {
+  return selectedItems.map((item, itemIndex) => {
     const media = mediaById(item.media_id);
     return `
-      <div class="playlist-item-row">
+      <div class="playlist-item-row" data-item-index="${itemIndex}">
         <div class="playlist-item-copy">
           <strong>${escapeHtml(media?.name || `Media ${item.media_id}`)}</strong>
           <small>${escapeHtml(mediaTypeLabel(media?.kind || "media item"))}</small>
         </div>
-        <label class="playlist-duration-field">
-          <span>Seconds</span>
-          <input type="number" min="2" name="duration_${itemIndex}" value="${Number(item.duration || 10)}">
-        </label>
+        <div class="playlist-row-actions">
+          <label class="playlist-duration-field">
+            <span>Seconds</span>
+            <input type="number" min="2" name="duration_${itemIndex}" value="${Number(item.duration || 10)}">
+          </label>
+          <button class="secondary danger" type="button" onclick="removePlaylistRow(${itemIndex})">Remove</button>
+        </div>
         <input type="hidden" name="media_id_${itemIndex}" value="${Number(item.media_id)}">
       </div>
     `;
   }).join("");
+}
 
+function playlistEditorMarkup(playlist, selectedItems) {
+  const selectedIds = new Set(selectedItems.map((item) => Number(item.media_id)));
   return `
-    <p class="eyebrow">PLAYLIST TIMING</p>
+    <p class="eyebrow">PLAYLIST BUILDER</p>
     <h2>Edit playlist</h2>
     <div class="field"><label>Playlist name</label><input name="name" value="${escapeHtml(playlist.name)}" required></div>
+    <div class="playlist-config-grid">
+      <div class="field">
+        <label>Layout</label>
+        <select name="layout_mode">
+          <option value="full" ${playlist.layout_mode === "full" ? "selected" : ""}>Full screen</option>
+          <option value="split-2" ${playlist.layout_mode === "split-2" ? "selected" : ""}>Split screen 2</option>
+          <option value="split-4" ${playlist.layout_mode === "split-4" ? "selected" : ""}>Split screen 4</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Fit mode</label>
+        <select name="fit_mode">
+          <option value="contain" ${playlist.fit_mode === "contain" ? "selected" : ""}>Show complete image</option>
+          <option value="cover" ${playlist.fit_mode === "cover" ? "selected" : ""}>Fill more of the screen</option>
+        </select>
+      </div>
+    </div>
     <div class="playlist-tools">
       <label class="playlist-apply-all">
         <span>Set all items to</span>
@@ -262,9 +305,82 @@ function playlistEditorMarkup(playlist) {
       </label>
       <button class="secondary" type="button" id="apply-all-button">Apply to all</button>
     </div>
-    <div class="playlist-item-list">${rows}</div>
+    <div class="field">
+      <label>Items in playlist</label>
+      <div class="playlist-item-list" id="playlist-item-list">${buildPlaylistRows(selectedItems)}</div>
+    </div>
+    <div class="field">
+      <label>Add or remove media</label>
+      <div class="picker picker-wide">
+        ${state.media.map((media) => `
+          <label class="pick">
+            <input type="checkbox" name="media_pick" value="${media.id}" ${selectedIds.has(media.id) ? "checked" : ""}>
+            <span>${escapeHtml(media.name)}</span>
+          </label>
+        `).join("")}
+      </div>
+    </div>
     <div class="modal-footer"><button class="secondary" value="cancel">Cancel</button><button class="primary">Save playlist</button></div>
   `;
+}
+
+function collectSelectedPlaylistItems(playlist, formData) {
+  const selectedIds = new Set(formData.getAll("media_pick").map((value) => Number(value)));
+  const existingRows = [];
+  let itemIndex = 0;
+  while (formData.has(`media_id_${itemIndex}`)) {
+    const mediaId = Number(formData.get(`media_id_${itemIndex}`));
+    if (selectedIds.has(mediaId)) {
+      existingRows.push({
+        media_id: mediaId,
+        duration: Math.max(2, Number(formData.get(`duration_${itemIndex}`) || 10)),
+      });
+      selectedIds.delete(mediaId);
+    }
+    itemIndex += 1;
+  }
+  const newRows = [...selectedIds].map((mediaId) => {
+    const original = playlist.items.find((item) => Number(item.media_id) === Number(mediaId));
+    return { media_id: mediaId, duration: Math.max(2, Number(original?.duration || 10)) };
+  });
+  return [...existingRows, ...newRows];
+}
+
+function bindPlaylistEditor(selectedItems) {
+  window.playlistDraft = selectedItems.map((item) => ({ ...item }));
+  const rebuild = () => {
+    const list = $("#playlist-item-list");
+    if (list) list.innerHTML = buildPlaylistRows(window.playlistDraft);
+  };
+  window.removePlaylistRow = (rowIndex) => {
+    const removed = window.playlistDraft.splice(rowIndex, 1)[0];
+    const checkbox = $(`input[name="media_pick"][value="${removed.media_id}"]`);
+    if (checkbox) checkbox.checked = false;
+    rebuild();
+  };
+  $$(".pick input[name='media_pick']").forEach((checkbox) => {
+    checkbox.onchange = () => {
+      const mediaId = Number(checkbox.value);
+      const existing = window.playlistDraft.find((item) => Number(item.media_id) === mediaId);
+      if (checkbox.checked && !existing) {
+        window.playlistDraft.push({ media_id: mediaId, duration: 10 });
+      }
+      if (!checkbox.checked && existing) {
+        window.playlistDraft = window.playlistDraft.filter((item) => Number(item.media_id) !== mediaId);
+      }
+      rebuild();
+    };
+  });
+  const applyButton = $("#apply-all-button");
+  const applyInput = $("#apply-all-duration");
+  if (applyButton && applyInput) {
+    applyButton.onclick = () => {
+      const nextValue = Math.max(2, Number(applyInput.value || 10));
+      $$(".playlist-duration-field input").forEach((inputEl) => {
+        inputEl.value = String(nextValue);
+      });
+    };
+  }
 }
 
 function openCreateScreen() {
@@ -285,7 +401,24 @@ function openPlaylistBuilder() {
     <p class="eyebrow">NEW PLAYLIST</p>
     <h2>Build a playlist</h2>
     <div class="field"><label>Playlist name</label><input name="name" placeholder="Morning announcements" required></div>
-    <div class="field"><label>Choose content</label><div class="picker">${state.media.map((media) => `<label class="pick"><input type="checkbox" name="media" value="${media.id}"><span>${escapeHtml(media.name)}</span></label>`).join("")}</div></div>
+    <div class="playlist-config-grid">
+      <div class="field">
+        <label>Layout</label>
+        <select name="layout_mode">
+          <option value="full">Full screen</option>
+          <option value="split-2">Split screen 2</option>
+          <option value="split-4">Split screen 4</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Fit mode</label>
+        <select name="fit_mode">
+          <option value="contain">Show complete image</option>
+          <option value="cover">Fill more of the screen</option>
+        </select>
+      </div>
+    </div>
+    <div class="field"><label>Choose content</label><div class="picker picker-wide">${state.media.map((media) => `<label class="pick"><input type="checkbox" name="media" value="${media.id}"><span>${escapeHtml(media.name)}</span></label>`).join("")}</div></div>
     <div class="field"><label>Default duration (seconds)</label><input name="duration" type="number" min="2" value="10"></div>
     <div class="modal-footer"><button class="secondary" value="cancel">Cancel</button><button class="primary">Create playlist</button></div>
   `, async (formData) => {
@@ -293,6 +426,8 @@ function openPlaylistBuilder() {
     if (!ids.length) throw new Error("Select at least one item");
     const payload = new FormData();
     payload.set("name", formData.get("name"));
+    payload.set("layout_mode", formData.get("layout_mode"));
+    payload.set("fit_mode", formData.get("fit_mode"));
     payload.set("items", JSON.stringify(ids.map((id) => ({ media_id: Number(id), duration: Number(formData.get("duration")) }))));
     await api("/api/playlists", { method: "POST", body: payload });
     toast("Playlist created");
@@ -351,30 +486,20 @@ window.deleteScreen = async (screenId) => {
 window.editPlaylist = async (playlistId) => {
   const playlist = state.playlists.find((item) => item.id === playlistId);
   if (!playlist) return;
-
-  showModal(playlistEditorMarkup(playlist), async (formData) => {
-    const items = playlist.items.map((item, itemIndex) => ({
-      media_id: Number(formData.get(`media_id_${itemIndex}`)),
-      duration: Number(formData.get(`duration_${itemIndex}`) || item.duration || 10),
-    }));
+  const draftItems = playlist.items.map((item) => ({ ...item }));
+  showModal(playlistEditorMarkup(playlist, draftItems), async (formData) => {
+    const items = collectSelectedPlaylistItems(playlist, formData);
+    if (!items.length) throw new Error("Playlist needs at least one item");
     const payload = new FormData();
     payload.set("name", formData.get("name"));
+    payload.set("layout_mode", formData.get("layout_mode"));
+    payload.set("fit_mode", formData.get("fit_mode"));
     payload.set("items", JSON.stringify(items));
     await api(`/api/playlists/${playlistId}`, { method: "PUT", body: payload });
-    toast("Playlist timing updated");
+    toast("Playlist updated");
     await refresh();
   });
-
-  const applyButton = $("#apply-all-button");
-  const applyInput = $("#apply-all-duration");
-  if (applyButton && applyInput) {
-    applyButton.onclick = () => {
-      const nextValue = Math.max(2, Number(applyInput.value || 10));
-      $$(".playlist-duration-field input").forEach((inputEl) => {
-        inputEl.value = String(nextValue);
-      });
-    };
-  }
+  bindPlaylistEditor(draftItems);
 };
 
 window.assignOne = async (screenId) => {

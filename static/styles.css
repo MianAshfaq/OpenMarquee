@@ -213,6 +213,11 @@ dialog form{padding:28px;position:relative}
   background:#fff;
 }
 .helper-text{margin:0;color:var(--muted);font-size:12px;line-height:1.5}
+.playlist-config-grid{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:12px;
+}
 .playlist-tools{
   display:flex;
   flex-wrap:wrap;
@@ -250,6 +255,11 @@ dialog form{padding:28px;position:relative}
   border:1px solid var(--line);
   border-radius:8px;
 }
+.playlist-row-actions{
+  display:flex;
+  align-items:end;
+  gap:10px;
+}
 .playlist-item-copy strong,.playlist-item-copy small{display:block}
 .playlist-item-copy small{color:var(--muted);font-size:12px;margin-top:4px}
 .playlist-duration-field{
@@ -275,6 +285,7 @@ dialog form{padding:28px;position:relative}
   max-height:320px;
   overflow:auto;
 }
+.picker-wide{grid-template-columns:repeat(auto-fill,minmax(180px,1fr))}
 .pick{
   border:1px solid var(--line);
   padding:10px;
@@ -316,6 +327,7 @@ dialog form{padding:28px;position:relative}
 @media (max-width:900px){
   .stats{grid-template-columns:1fr}
   .section-title,.selection-bar{align-items:flex-start;flex-direction:column}
+  .playlist-config-grid{grid-template-columns:1fr}
 }
 @media (max-width:760px){
   .sidebar{position:static;width:auto;height:auto;padding:14px}
@@ -328,5 +340,5 @@ dialog form{padding:28px;position:relative}
   .media-grid,.screen-grid,.list-grid{grid-template-columns:1fr}
   .toolbar{justify-content:flex-start}
   .discover-row{grid-template-columns:1fr}
-  .playlist-item-row{grid-template-columns:1fr}
+  .playlist-item-row,.playlist-row-actions{grid-template-columns:1fr;display:grid}
 }

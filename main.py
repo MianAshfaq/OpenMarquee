@@ -66,6 +66,8 @@ def init_db() -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 items TEXT NOT NULL DEFAULT '[]',
+                layout_mode TEXT NOT NULL DEFAULT 'full',
+                fit_mode TEXT NOT NULL DEFAULT 'contain',
                 created_at INTEGER NOT NULL
             );
             CREATE TABLE IF NOT EXISTS screens (
@@ -89,6 +91,11 @@ def init_db() -> None:
         media_columns = {row["name"] for row in conn.execute("PRAGMA table_info(media)").fetchall()}
         if "source_url" not in media_columns:
             conn.execute("ALTER TABLE media ADD COLUMN source_url TEXT")
+        playlist_columns = {row["name"] for row in conn.execute("PRAGMA table_info(playlists)").fetchall()}
+        if "layout_mode" not in playlist_columns:
+            conn.execute("ALTER TABLE playlists ADD COLUMN layout_mode TEXT NOT NULL DEFAULT 'full'")
+        if "fit_mode" not in playlist_columns:
+            conn.execute("ALTER TABLE playlists ADD COLUMN fit_mode TEXT NOT NULL DEFAULT 'contain'")
 
 
 init_db()
@@ -170,6 +177,20 @@ def normalize_source_url(value: str) -> str:
     parsed = urllib.parse.urlparse(cleaned)
     if parsed.scheme not in {"http", "https"}:
         raise HTTPException(400, "Only http and https URLs are supported")
+    return cleaned
+
+
+def normalize_layout_mode(value: str) -> str:
+    cleaned = (value or "full").strip().lower()
+    if cleaned not in {"full", "split-2", "split-4"}:
+        raise HTTPException(400, "Invalid layout mode")
+    return cleaned
+
+
+def normalize_fit_mode(value: str) -> str:
+    cleaned = (value or "contain").strip().lower()
+    if cleaned not in {"contain", "cover"}:
+        raise HTTPException(400, "Invalid fit mode")
     return cleaned
 
 
@@ -301,25 +322,40 @@ def delete_media(media_id: int) -> dict:
 
 
 @app.post("/api/playlists")
-def create_playlist(name: str = Form(...), items: str = Form("[]")) -> dict:
+def create_playlist(
+    name: str = Form(...),
+    items: str = Form("[]"),
+    layout_mode: str = Form("full"),
+    fit_mode: str = Form("contain"),
+) -> dict:
     try:
         parsed = json.loads(items)
     except json.JSONDecodeError as exc:
         raise HTTPException(400, "Invalid playlist") from exc
+    cleaned_layout = normalize_layout_mode(layout_mode)
+    cleaned_fit = normalize_fit_mode(fit_mode)
     with db() as conn:
         cursor = conn.execute(
-            "INSERT INTO playlists(name, items, created_at) VALUES(?,?,?)",
-            (name.strip() or "Untitled playlist", json.dumps(parsed), int(time.time())),
+            "INSERT INTO playlists(name, items, layout_mode, fit_mode, created_at) VALUES(?,?,?,?,?)",
+            (name.strip() or "Untitled playlist", json.dumps(parsed), cleaned_layout, cleaned_fit, int(time.time())),
         )
     return {"id": cursor.lastrowid}
 
 
 @app.put("/api/playlists/{playlist_id}")
-def update_playlist(playlist_id: int, name: str = Form(...), items: str = Form("[]")) -> dict:
+def update_playlist(
+    playlist_id: int,
+    name: str = Form(...),
+    items: str = Form("[]"),
+    layout_mode: str = Form("full"),
+    fit_mode: str = Form("contain"),
+) -> dict:
     try:
         parsed = json.loads(items)
     except json.JSONDecodeError as exc:
         raise HTTPException(400, "Invalid playlist") from exc
+    cleaned_layout = normalize_layout_mode(layout_mode)
+    cleaned_fit = normalize_fit_mode(fit_mode)
     cleaned: list[dict] = []
     for item in parsed:
         media_id = int(item.get("media_id") or 0)
@@ -330,8 +366,8 @@ def update_playlist(playlist_id: int, name: str = Form(...), items: str = Form("
         raise HTTPException(400, "Playlist needs at least one item")
     with db() as conn:
         cursor = conn.execute(
-            "UPDATE playlists SET name=?, items=? WHERE id=?",
-            (name.strip() or "Untitled playlist", json.dumps(cleaned), playlist_id),
+            "UPDATE playlists SET name=?, items=?, layout_mode=?, fit_mode=? WHERE id=?",
+            (name.strip() or "Untitled playlist", json.dumps(cleaned), cleaned_layout, cleaned_fit, playlist_id),
         )
         if cursor.rowcount == 0:
             raise HTTPException(404, "Playlist not found")
@@ -427,9 +463,14 @@ def player_manifest(code: str) -> dict:
     with db() as conn:
         conn.execute("UPDATE screens SET last_seen=? WHERE id=?", (int(time.time()), screen["id"]))
     items: list[dict] = []
+    playlist_meta = {"layout_mode": "full", "fit_mode": "contain"}
     if screen["playlist_id"]:
-        playlists = rows("SELECT items FROM playlists WHERE id=?", (screen["playlist_id"],))
+        playlists = rows("SELECT items, layout_mode, fit_mode FROM playlists WHERE id=?", (screen["playlist_id"],))
         if playlists:
+            playlist_meta = {
+                "layout_mode": normalize_layout_mode(playlists[0].get("layout_mode") or "full"),
+                "fit_mode": normalize_fit_mode(playlists[0].get("fit_mode") or "contain"),
+            }
             configured = json.loads(playlists[0]["items"])
             media_lookup = {m["id"]: m for m in rows("SELECT * FROM media")}
             for item in configured:
@@ -437,7 +478,7 @@ def player_manifest(code: str) -> dict:
                 if media:
                     resolved_url = media["source_url"] or f"/media/{media['filename']}"
                     items.append({**media, "duration": max(2, int(item.get("duration", 10))), "url": resolved_url})
-    return {"screen": screen, "items": items, "generated_at": int(time.time())}
+    return {"screen": screen, "items": items, "generated_at": int(time.time()), **playlist_meta}
 
 
 @app.get("/api/rss")
