@@ -9,6 +9,10 @@
 - Keep `OPENMARQUEE_COOKIE_SECURE=1` in production
 - Keep the app behind TLS before enabling secure cookies
 
+## Live screen sharing
+
+Live Share sends encrypted WebRTC media from the admin browser to each selected player. Serve OpenMarquee through HTTPS when the admin panel is opened from any address other than `localhost`; browsers block display capture on insecure remote origins. In Chrome or Edge, select **Share system audio** in the capture picker when audio is required. For deployments across separate networks or strict firewalls, configure a TURN server before relying on remote WebRTC playback.
+
 ## Health check
 
 OpenMarquee exposes:

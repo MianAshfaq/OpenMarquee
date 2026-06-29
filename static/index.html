@@ -46,6 +46,7 @@
       <button class="nav" data-view="library"><i class="fa-solid fa-photo-film"></i><span>Media library</span></button>
       <button class="nav" data-view="playlists"><i class="fa-solid fa-list-ul"></i><span>Playlists</span></button>
       <button class="nav" data-view="screens"><i class="fa-solid fa-tv"></i><span>Screens</span></button>
+      <button class="nav" data-view="live-share"><i class="fa-solid fa-display"></i><span>Live Share</span></button>
       <button class="nav" data-view="activity"><i class="fa-solid fa-clock-rotate-left"></i><span>Activity</span></button>
       <button class="nav" data-view="help"><i class="fa-solid fa-circle-question"></i><span>FAQ & Guide</span></button>
       <button class="nav" data-view="reports"><i class="fa-solid fa-shield-halved"></i><span>Reports</span></button>
@@ -156,6 +157,32 @@
         <div><p class="eyebrow">AUDIT TRAIL</p><h2>Activity</h2></div>
       </div>
       <div id="activity-log-list" class="log-list"></div>
+    </section>
+
+    <section id="live-share" class="view">
+      <div class="section-title">
+        <div><p class="eyebrow">LIVE BROADCAST</p><h2>Share your screen</h2></div>
+        <div class="toolbar">
+          <button class="secondary" id="live-select-all"><i class="fa-solid fa-check-double"></i><span>Select all</span></button>
+          <button class="primary" id="start-live-share"><i class="fa-solid fa-display"></i><span>Start sharing</span></button>
+          <button class="danger" id="stop-live-share" disabled><i class="fa-solid fa-stop"></i><span>Stop live share</span></button>
+        </div>
+      </div>
+      <div class="live-share-layout">
+        <div class="live-preview-shell">
+          <video id="live-share-preview" autoplay muted playsinline></video>
+          <div id="live-preview-empty" class="live-preview-empty">
+            <i class="fa-solid fa-display"></i>
+            <strong>Your live preview appears here</strong>
+            <span>Choose one or more screens, then share a display, window, or browser tab. Enable system audio in the browser picker when sound is required.</span>
+          </div>
+          <div class="live-status-row"><span id="live-share-status" class="badge">Ready</span><span id="live-viewer-count">0 viewers</span></div>
+        </div>
+        <div>
+          <div class="section-title compact"><div><p class="eyebrow">TARGETS</p><h3>LED/LCD screens</h3></div></div>
+          <div id="live-screen-list" class="live-screen-list"></div>
+        </div>
+      </div>
     </section>
 
     <section id="help" class="view">

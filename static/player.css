@@ -92,6 +92,8 @@ body.player-loading #player-boot{display:grid}
 .grid-layout.split-4{grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:repeat(2,minmax(0,1fr))}
 .panel{position:relative;overflow:hidden;background:#020303;border-radius:18px}
 .scene-single .panel{border-radius:0}
+.scene-live{z-index:20;background:#000;opacity:1;transform:none}
+.live-stream-video{width:100%;height:100%;object-fit:contain;background:#000}
 .panel-backdrop,.panel-fill,.panel-backdrop-video{position:absolute;inset:0;width:100%;height:100%}
 .panel-backdrop{background-position:center;background-repeat:no-repeat;background-size:cover;filter:blur(22px) brightness(.58) saturate(1.1);transform:scale(1.08)}
 .panel-fill{background-position:center;background-repeat:no-repeat;background-size:cover;filter:blur(9px) brightness(.74) saturate(1.08);transform:scale(1.05)}

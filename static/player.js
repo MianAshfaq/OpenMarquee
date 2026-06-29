@@ -35,6 +35,11 @@ let manifestKey = "";
 let index = 0;
 let timer = null;
 let controlTimer = null;
+let liveSocket = null;
+let livePeer = null;
+let liveSessionId = "";
+let liveActive = false;
+let liveReconnectTimer = null;
 const instanceId = localStorage.getItem("openmarquee-instance") || crypto.randomUUID();
 localStorage.setItem("openmarquee-instance", instanceId);
 
@@ -46,6 +51,12 @@ form.onsubmit = (event) => {
   code = input.value.trim().toUpperCase();
   if (code.length !== 6) return;
   localStorage.setItem("openmarquee-code", code);
+  if (liveSocket) {
+    const previousSocket = liveSocket;
+    liveSocket = null;
+    previousSocket.close();
+  }
+  connectLiveSocket();
   sync(true);
 };
 
@@ -222,6 +233,88 @@ function createIdleScene() {
 function attemptPlay(mediaElement) {
   const promise = mediaElement.play?.();
   if (promise && typeof promise.catch === "function") promise.catch(() => {});
+}
+
+function liveSocketUrl() {
+  const protocol = location.protocol === "https:" ? "wss" : "ws";
+  return `${protocol}://${location.host}/ws/live/player?code=${encodeURIComponent(code)}&instance=${encodeURIComponent(instanceId)}`;
+}
+
+function sendPlayerSignal(message) {
+  if (liveSocket?.readyState === WebSocket.OPEN) liveSocket.send(JSON.stringify(message));
+}
+
+function stopLivePlayback() {
+  liveActive = false;
+  liveSessionId = "";
+  livePeer?.close();
+  livePeer = null;
+  sync(true);
+}
+
+function showLiveStream(stream) {
+  clearTimeout(timer);
+  liveActive = true;
+  const scene = document.createElement("section");
+  scene.className = "scene scene-single scene-live active";
+  const video = document.createElement("video");
+  video.className = "live-stream-video";
+  video.autoplay = true;
+  video.playsInline = true;
+  video.controls = false;
+  video.srcObject = stream;
+  scene.appendChild(video);
+  stage.querySelectorAll(".scene").forEach((oldScene) => cleanupScene(oldScene));
+  stage.replaceChildren(scene);
+  attemptPlay(video);
+}
+
+async function receiveLiveOffer(message) {
+  livePeer?.close();
+  const peer = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+  peer.pendingCandidates = [];
+  livePeer = peer;
+  peer.onicecandidate = (event) => {
+    if (event.candidate) sendPlayerSignal({ type: "ice", candidate: event.candidate });
+  };
+  peer.ontrack = (event) => showLiveStream(event.streams[0]);
+  peer.onconnectionstatechange = () => {
+    if (["failed", "closed"].includes(peer.connectionState) && livePeer === peer && liveActive) stopLivePlayback();
+  };
+  await peer.setRemoteDescription(message.description);
+  for (const candidate of peer.pendingCandidates.splice(0)) await peer.addIceCandidate(candidate).catch(() => {});
+  const answer = await peer.createAnswer();
+  await peer.setLocalDescription(answer);
+  sendPlayerSignal({ type: "answer", description: peer.localDescription });
+}
+
+function connectLiveSocket() {
+  window.clearTimeout(liveReconnectTimer);
+  if (!code || liveSocket?.readyState === WebSocket.OPEN || liveSocket?.readyState === WebSocket.CONNECTING) return;
+  const socket = new WebSocket(liveSocketUrl());
+  liveSocket = socket;
+  socket.onmessage = async (event) => {
+    const message = JSON.parse(event.data);
+    try {
+      if (message.type === "live-start") {
+        liveSessionId = message.session_id;
+      } else if (message.type === "offer" && message.session_id === liveSessionId) {
+        await receiveLiveOffer(message);
+      } else if (message.type === "ice" && message.session_id === liveSessionId && livePeer && message.candidate) {
+        if (livePeer.remoteDescription) await livePeer.addIceCandidate(message.candidate).catch(() => {});
+        else livePeer.pendingCandidates.push(message.candidate);
+      } else if (message.type === "live-stop") {
+        stopLivePlayback();
+      }
+    } catch (error) {
+      sendPlayerSignal({ type: "player-error", detail: String(error?.message || error) });
+    }
+  };
+  socket.onclose = () => {
+    if (liveSocket === socket) liveSocket = null;
+    if (liveActive) stopLivePlayback();
+    liveReconnectTimer = window.setTimeout(connectLiveSocket, 3000);
+  };
 }
 
 function createImagePanel(item, animationIndex, splitMode = false) {
@@ -478,6 +571,7 @@ async function createSplitScene(items, visualIndex) {
 }
 
 async function play(sceneIndex) {
+  if (liveActive) return;
   clearTimeout(timer);
   index = sceneIndex;
 
@@ -569,7 +663,10 @@ function escapeHtml(value) {
 }
 
 showFullscreenControl();
-if (code) sync(true);
+if (code) {
+  connectLiveSocket();
+  sync(true);
+}
 else {
   document.body.classList.remove("player-loading");
   playerBoot.style.display = "none";

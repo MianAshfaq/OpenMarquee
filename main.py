@@ -19,7 +19,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 try:
@@ -137,6 +137,33 @@ TEXT_THEMES = {"midnight", "emerald", "sunset", "royal", "mono", "aurora", "velv
 TEXT_FONTS = {"clean", "display", "editorial", "condensed", "rounded", "mono", "arabic-ui", "urdu-nastaliq"}
 TEXT_ALIGNMENTS = {"left", "center", "right"}
 TEXT_CASES = {"none", "uppercase", "title"}
+
+
+class LiveShareHub:
+    def __init__(self) -> None:
+        self.admins: dict[str, WebSocket] = {}
+        self.players: dict[tuple[int, str], WebSocket] = {}
+        self.targets: dict[int, str] = {}
+
+    async def send(self, socket: WebSocket | None, message: dict) -> bool:
+        if socket is None:
+            return False
+        try:
+            await socket.send_json(message)
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+
+    async def stop_session(self, session_id: str) -> None:
+        screen_ids = [screen_id for screen_id, owner in self.targets.items() if owner == session_id]
+        for screen_id in screen_ids:
+            self.targets.pop(screen_id, None)
+            for (player_screen_id, _instance_id), socket in list(self.players.items()):
+                if player_screen_id == screen_id:
+                    await self.send(socket, {"type": "live-stop", "session_id": session_id})
+
+
+LIVE_SHARE = LiveShareHub()
 
 
 logger = logging.getLogger("openmarquee")
@@ -1568,6 +1595,84 @@ def player_manifest(request: Request, code: str, instance: str = "") -> dict:
                         "url": resolved_url,
                     })
     return {"screen": screen, "items": items, "generated_at": now, **playlist_meta}
+
+
+@app.websocket("/ws/live/admin")
+async def live_admin_socket(websocket: WebSocket) -> None:
+    username = decode_session_token(websocket.cookies.get(SESSION_COOKIE))
+    if not username:
+        await websocket.close(code=4401)
+        return
+    session_id = secrets.token_urlsafe(18)
+    await websocket.accept()
+    LIVE_SHARE.admins[session_id] = websocket
+    await websocket.send_json({"type": "registered", "session_id": session_id})
+    try:
+        while True:
+            message = await websocket.receive_json()
+            message_type = message.get("type")
+            if message_type == "live-start":
+                requested = {int(value) for value in message.get("screen_ids", []) if str(value).isdigit()}
+                allowed = {row["id"] for row in rows("SELECT id FROM screens")}
+                screen_ids = sorted(requested & allowed)
+                await LIVE_SHARE.stop_session(session_id)
+                for screen_id in screen_ids:
+                    previous_session = LIVE_SHARE.targets.get(screen_id)
+                    if previous_session and previous_session != session_id:
+                        await LIVE_SHARE.stop_session(previous_session)
+                    LIVE_SHARE.targets[screen_id] = session_id
+                    for (player_screen_id, instance_id), socket in list(LIVE_SHARE.players.items()):
+                        if player_screen_id == screen_id:
+                            await LIVE_SHARE.send(socket, {"type": "live-start", "session_id": session_id})
+                            await websocket.send_json({"type": "player-ready", "screen_id": screen_id, "instance_id": instance_id})
+                log_event(username, "live_start", "screen", f"{len(screen_ids)} screens", {"screen_ids": screen_ids})
+                await websocket.send_json({"type": "live-active", "screen_ids": screen_ids})
+            elif message_type == "live-stop":
+                await LIVE_SHARE.stop_session(session_id)
+                log_event(username, "live_stop", "screen", "Live screen share", {})
+            elif message_type in {"offer", "ice"}:
+                key = (int(message.get("screen_id") or 0), str(message.get("instance_id") or "")[:80])
+                if LIVE_SHARE.targets.get(key[0]) == session_id:
+                    await LIVE_SHARE.send(LIVE_SHARE.players.get(key), {**message, "session_id": session_id})
+    except WebSocketDisconnect:
+        pass
+    finally:
+        LIVE_SHARE.admins.pop(session_id, None)
+        await LIVE_SHARE.stop_session(session_id)
+
+
+@app.websocket("/ws/live/player")
+async def live_player_socket(websocket: WebSocket, code: str = "", instance: str = "") -> None:
+    screen_rows = rows("SELECT id FROM screens WHERE code=?", ((code or "").upper(),))
+    cleaned_instance = (instance or "").strip()[:80]
+    if not screen_rows or not cleaned_instance:
+        await websocket.close(code=4404)
+        return
+    screen_id = int(screen_rows[0]["id"])
+    key = (screen_id, cleaned_instance)
+    await websocket.accept()
+    LIVE_SHARE.players[key] = websocket
+    session_id = LIVE_SHARE.targets.get(screen_id)
+    if session_id:
+        await websocket.send_json({"type": "live-start", "session_id": session_id})
+        await LIVE_SHARE.send(LIVE_SHARE.admins.get(session_id), {"type": "player-ready", "screen_id": screen_id, "instance_id": cleaned_instance})
+    try:
+        while True:
+            message = await websocket.receive_json()
+            session_id = LIVE_SHARE.targets.get(screen_id)
+            if session_id and message.get("type") in {"answer", "ice", "player-error"}:
+                await LIVE_SHARE.send(
+                    LIVE_SHARE.admins.get(session_id),
+                    {**message, "screen_id": screen_id, "instance_id": cleaned_instance},
+                )
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if LIVE_SHARE.players.get(key) is websocket:
+            LIVE_SHARE.players.pop(key, None)
+        session_id = LIVE_SHARE.targets.get(screen_id)
+        if session_id:
+            await LIVE_SHARE.send(LIVE_SHARE.admins.get(session_id), {"type": "player-left", "screen_id": screen_id, "instance_id": cleaned_instance})
 
 
 @app.get("/api/rss")

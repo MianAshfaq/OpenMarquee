@@ -10,6 +10,13 @@ const state = {
   auth: { authenticated: false, username: "", mfa_enabled: false },
 };
 const selectedScreens = new Set();
+const liveShare = {
+  selected: new Set(),
+  stream: null,
+  socket: null,
+  sessionId: "",
+  peers: new Map(),
+};
 const industryProfiles = [
   ["retail", "Retail"],
   ["hospital", "Hospital"],
@@ -505,6 +512,7 @@ function render() {
     helpCard("8. How does offline or LAN mode work?", "If the server, player, and screens are on the same LAN or Wi-Fi, local uploads, text ads, countdowns, playlists, and pairing continue to work without internet. Internet is only required for remote web URLs such as YouTube, dashboards, or cloud pages.", "For strong offline performance, prefer uploaded images, video, PDF, audio, and text assets over external URLs."),
     helpCard("9. How do deployment profiles work?", "At first sign-in you can choose one or more deployment profiles such as retail, hospital, office, hotel, or events. Each screen can then be assigned one profile to match its content style and operating context.", "This makes it easier to organize different LCD fleets under one server without mixing use cases."),
     helpCard("10. How do I keep the system secure?", "Use a strong admin password, enable MFA, deploy behind HTTPS and Nginx, and keep the player devices managed. Only authenticated admins can change playlists, screens, and security settings.", "Reports and Activity help you track failed logins, pairing changes, content actions, and operator behavior."),
+    helpCard("11. How do I share my screen live?", "Open Live Share, select one or more paired screens, and press Start sharing. Choose a display, window, or browser tab in the browser picker. The live feed temporarily replaces the playlist and the playlist resumes automatically when sharing stops.", "For sound, enable Share system audio in Chrome or Edge. A browser tab is usually the most reliable choice for tab audio. Remote admin access must use HTTPS."),
   ];
 
   $("#overview-screens").innerHTML = state.screens.map(overviewScreenCard).join("") || '<p class="empty">No screens paired yet.</p>';
@@ -517,6 +525,7 @@ function render() {
   $("#report-grid").innerHTML = reportCards.join("");
   $("#activity-log-list").innerHTML = state.logs.map(activityRow).join("") || '<p class="empty">No activity yet.</p>';
   $("#log-list").innerHTML = state.logs.map(activityRow).join("") || '<p class="empty">No activity yet.</p>';
+  renderLiveTargets();
   renderFolders();
   renderSelectionState();
 }
@@ -529,6 +538,7 @@ function go(view) {
     library: "Your content library",
     playlists: "Playlist programming",
     screens: "Your screen fleet",
+    "live-share": "Broadcast your screen live",
     activity: "Recent activity and audit trail",
     help: "FAQ and full usage guide",
     reports: "Operations and security reports",
@@ -1169,6 +1179,147 @@ async function openDiscovery() {
   }
 }
 
+function renderLiveTargets() {
+  const list = $("#live-screen-list");
+  if (!list) return;
+  const validIds = new Set(state.screens.map((screen) => screen.id));
+  [...liveShare.selected].forEach((screenId) => {
+    if (!validIds.has(screenId)) liveShare.selected.delete(screenId);
+  });
+  list.innerHTML = state.screens.map((screen) => `
+    <label class="live-target">
+      <input type="checkbox" data-live-screen="${screen.id}" ${liveShare.selected.has(screen.id) ? "checked" : ""} ${liveShare.stream ? "disabled" : ""}>
+      <span><strong>${escapeHtml(screen.name)}</strong><small>${escapeHtml(screen.brand || "Unknown brand")} - ${escapeHtml(screen.ip_address || "Player link")}</small></span>
+      <em>${screen.online ? "Player online" : "Player offline"}</em>
+    </label>
+  `).join("") || '<p class="empty">Add and pair a screen before starting a live share.</p>';
+}
+
+function setLiveShareUi(active, message = "Ready") {
+  $("#start-live-share").disabled = active;
+  $("#stop-live-share").disabled = !active;
+  $("#live-select-all").disabled = active;
+  $("#live-share-status").textContent = message;
+  $("#live-share-status").className = `badge ${active ? "online" : ""}`;
+  $("#live-share-preview").style.display = active ? "block" : "none";
+  $("#live-preview-empty").style.display = active ? "none" : "grid";
+  renderLiveTargets();
+}
+
+function liveSocketUrl(path) {
+  return `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${path}`;
+}
+
+function sendLiveSignal(message) {
+  if (liveShare.socket?.readyState === WebSocket.OPEN) liveShare.socket.send(JSON.stringify(message));
+}
+
+function updateLiveViewerCount() {
+  const connected = [...liveShare.peers.values()].filter((peer) => ["connected", "completed"].includes(peer.connectionState)).length;
+  $("#live-viewer-count").textContent = `${connected} viewer${connected === 1 ? "" : "s"}`;
+}
+
+async function createLiveSender(screenId, instanceId) {
+  if (!liveShare.stream) return;
+  const key = `${screenId}:${instanceId}`;
+  liveShare.peers.get(key)?.close();
+  const peer = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+  peer.pendingCandidates = [];
+  liveShare.peers.set(key, peer);
+  liveShare.stream.getTracks().forEach((track) => peer.addTrack(track, liveShare.stream));
+  peer.onicecandidate = (event) => {
+    if (event.candidate) sendLiveSignal({ type: "ice", screen_id: screenId, instance_id: instanceId, candidate: event.candidate });
+  };
+  peer.onconnectionstatechange = () => {
+    updateLiveViewerCount();
+    if (["failed", "closed"].includes(peer.connectionState)) liveShare.peers.delete(key);
+  };
+  const offer = await peer.createOffer();
+  await peer.setLocalDescription(offer);
+  sendLiveSignal({ type: "offer", screen_id: screenId, instance_id: instanceId, description: peer.localDescription });
+}
+
+function connectLiveAdminSocket() {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(liveSocketUrl("/ws/live/admin"));
+    liveShare.socket = socket;
+    const timeout = window.setTimeout(() => reject(new Error("Live connection timed out")), 8000);
+    socket.onmessage = async (event) => {
+      const message = JSON.parse(event.data);
+      if (message.type === "registered") {
+        window.clearTimeout(timeout);
+        liveShare.sessionId = message.session_id;
+        resolve();
+      } else if (message.type === "player-ready") {
+        await createLiveSender(message.screen_id, message.instance_id);
+      } else if (message.type === "answer") {
+        const peer = liveShare.peers.get(`${message.screen_id}:${message.instance_id}`);
+        if (peer && message.description) {
+          await peer.setRemoteDescription(message.description);
+          for (const candidate of peer.pendingCandidates.splice(0)) await peer.addIceCandidate(candidate).catch(() => {});
+        }
+      } else if (message.type === "ice") {
+        const peer = liveShare.peers.get(`${message.screen_id}:${message.instance_id}`);
+        if (peer && message.candidate) {
+          if (peer.remoteDescription) await peer.addIceCandidate(message.candidate).catch(() => {});
+          else peer.pendingCandidates.push(message.candidate);
+        }
+      } else if (message.type === "player-left") {
+        const key = `${message.screen_id}:${message.instance_id}`;
+        liveShare.peers.get(key)?.close();
+        liveShare.peers.delete(key);
+        updateLiveViewerCount();
+      }
+    };
+    socket.onerror = () => {
+      window.clearTimeout(timeout);
+      reject(new Error("Could not open the live-share connection"));
+    };
+    socket.onclose = () => {
+      if (liveShare.stream) stopLiveShare(false);
+    };
+  });
+}
+
+async function startLiveShare() {
+  if (!liveShare.selected.size) throw new Error("Select at least one target screen");
+  if (!navigator.mediaDevices?.getDisplayMedia) throw new Error("Screen sharing requires HTTPS or localhost in a supported browser");
+  const stream = await navigator.mediaDevices.getDisplayMedia({
+    video: { frameRate: { ideal: 30, max: 60 } },
+    audio: true,
+  });
+  liveShare.stream = stream;
+  $("#live-share-preview").srcObject = stream;
+  stream.getVideoTracks()[0].addEventListener("ended", () => stopLiveShare());
+  try {
+    await connectLiveAdminSocket();
+    sendLiveSignal({ type: "live-start", screen_ids: [...liveShare.selected] });
+    setLiveShareUi(true, stream.getAudioTracks().length ? "Live with audio" : "Live - no audio selected");
+    toast(`Live share started for ${liveShare.selected.size} screen${liveShare.selected.size === 1 ? "" : "s"}`);
+  } catch (error) {
+    await stopLiveShare(false);
+    throw error;
+  }
+}
+
+async function stopLiveShare(notify = true) {
+  sendLiveSignal({ type: "live-stop" });
+  liveShare.peers.forEach((peer) => peer.close());
+  liveShare.peers.clear();
+  liveShare.stream?.getTracks().forEach((track) => track.stop());
+  liveShare.stream = null;
+  if (liveShare.socket) {
+    const socket = liveShare.socket;
+    liveShare.socket = null;
+    socket.close();
+  }
+  $("#live-share-preview").srcObject = null;
+  liveShare.sessionId = "";
+  updateLiveViewerCount();
+  setLiveShareUi(false, "Ready");
+  if (notify) toast("Live share stopped; playlists resumed");
+}
+
 async function openPasswordModal() {
   await showModal(`
     <p class="eyebrow">SECURITY</p>
@@ -1254,6 +1405,13 @@ window.moveMedia = async (mediaId) => {
 $$(".nav").forEach((item) => { item.onclick = () => go(item.dataset.view); });
 $$("[data-go]").forEach((item) => { item.onclick = () => go(item.dataset.go); });
 document.addEventListener("click", async (event) => {
+  const liveTarget = event.target.closest("[data-live-screen]");
+  if (liveTarget) {
+    const screenId = Number(liveTarget.dataset.liveScreen);
+    if (liveTarget.checked) liveShare.selected.add(screenId);
+    else liveShare.selected.delete(screenId);
+    return;
+  }
   const folderFilter = event.target.closest("[data-folder-filter]");
   if (folderFilter) {
     state.activeFolderId = folderFilter.dataset.folderFilter;
@@ -1331,6 +1489,14 @@ $("#assign-selected").onclick = () => openBulkAssign(false);
 $("#assign-all").onclick = () => openBulkAssign(true);
 $("#stop-selected").onclick = () => openBulkStop(false);
 $("#stop-all").onclick = () => openBulkStop(true);
+$("#live-select-all").onclick = () => {
+  const allSelected = state.screens.length > 0 && state.screens.every((screen) => liveShare.selected.has(screen.id));
+  liveShare.selected.clear();
+  if (!allSelected) state.screens.forEach((screen) => liveShare.selected.add(screen.id));
+  renderLiveTargets();
+};
+$("#start-live-share").onclick = () => startLiveShare().catch((error) => toast(error.message));
+$("#stop-live-share").onclick = () => stopLiveShare();
 $("#select-all").onchange = (event) => {
   if (event.target.checked) state.screens.forEach((screen) => selectedScreens.add(screen.id));
   else selectedScreens.clear();
