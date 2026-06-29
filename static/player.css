@@ -1,6 +1,10 @@
 *{box-sizing:border-box}
 html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#09110d;color:#fff;font-family:"Segoe UI",Arial,sans-serif;letter-spacing:0}
-#pair{height:100%;display:grid;place-content:center;text-align:center;background:radial-gradient(circle at 50% 36%,#1f503d 0,#0d1b15 50%,#09110d 100%)}
+#player-boot{position:fixed;inset:0;z-index:60;display:none;place-content:center;justify-items:center;gap:10px;background:radial-gradient(circle at 50% 36%,#1f503d 0,#0d1b15 50%,#09110d 100%);text-align:center}
+body.player-loading #player-boot{display:grid}
+#player-boot strong{font-size:28px}
+#player-boot span{color:#a7bbb0;font-size:14px}
+#pair{height:100%;display:none;place-content:center;text-align:center;background:radial-gradient(circle at 50% 36%,#1f503d 0,#0d1b15 50%,#09110d 100%)}
 .player-logo{margin:auto;width:96px;height:96px;display:block}
 #pair p{color:#d8f06b;font-size:12px;font-weight:800;letter-spacing:2px;margin-top:22px}
 #pair h1{font-size:42px;margin:0 0 24px}
@@ -66,6 +70,7 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#09110d;col
 .scene.transition-curtain.active{clip-path:inset(0 0 0 0)}
 .scene-idle{display:grid;place-items:center;background:radial-gradient(circle at 50% 38%, rgba(41,107,79,.26), transparent 24%),linear-gradient(180deg,#07100d 0%,#040707 100%)}
 .message-shell{display:grid;gap:24px;place-items:center;text-align:center}
+.idle-brand-shell{position:relative;padding:24px 32px}
 .message-mark{width:110px;height:110px;border-radius:28px;background:linear-gradient(160deg, rgba(214,240,107,.95), rgba(74,169,104,.92)),#d8f06b;box-shadow:0 16px 60px rgba(119,201,98,.24);position:relative}
 .message-mark::before,.message-mark::after{content:"";position:absolute;background:#122218;border-radius:999px}
 .message-mark::before{width:54px;height:10px;left:28px;top:50px;transform:rotate(-40deg)}
@@ -73,6 +78,13 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#09110d;col
 .message{display:grid;gap:10px;color:#9baca3}
 .message strong{font-size:34px;color:#fff}
 .message span{font-size:21px}
+.message small{font-size:14px;color:#8fa49a}
+.idle-mark{display:grid;place-items:center;overflow:hidden;animation:idleFloat 4s ease-in-out infinite}
+.idle-mark::before,.idle-mark::after{display:none}
+.idle-mark img{width:70px;height:70px;filter:drop-shadow(0 16px 35px rgba(0,0,0,.24))}
+.idle-orbit{position:absolute;border-radius:999px;border:1px solid rgba(216,240,107,.18);animation:idleSpin 14s linear infinite}
+.idle-orbit-one{width:220px;height:220px}
+.idle-orbit-two{width:300px;height:300px;animation-direction:reverse;animation-duration:19s}
 
 .grid-layout,.panel{width:100%;height:100%}
 .grid-layout{display:grid;gap:10px;padding:10px}
@@ -97,9 +109,19 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#09110d;col
 .text-stage{position:relative;z-index:2;width:min(1100px,100%);display:grid;place-items:center;text-align:center}
 .text-stage.text-align-left{text-align:left;justify-items:start}
 .text-stage.text-align-right{text-align:right;justify-items:end}
-.text-copy{display:grid;gap:18px}
-.text-copy strong{font-size:24px;opacity:.88}
-.text-copy p{margin:0;font-size:clamp(32px,5vw,78px);line-height:1.08;font-weight:800}
+.text-copy{display:grid;gap:16px;max-width:min(1220px,100%)}
+.text-copy strong{font-size:21px;opacity:.82;letter-spacing:.06em;text-transform:uppercase}
+.text-copy h2{margin:0;font-size:clamp(36px,6vw,88px);line-height:1.02;font-weight:900;font-family:var(--text-font, "Segoe UI", Arial, sans-serif);transform:scale(var(--headline-scale,1));transform-origin:center center}
+.text-copy p{margin:0;font-size:clamp(18px,2.2vw,34px);line-height:1.35;max-width:22ch;font-family:var(--text-font, "Segoe UI", Arial, sans-serif)}
+.text-badge{display:inline-flex;align-items:center;justify-content:center;padding:8px 14px;border-radius:999px;background:color-mix(in srgb, var(--accent, #ffe082) 18%, transparent);border:1px solid color-mix(in srgb, var(--accent, #ffe082) 55%, transparent);color:var(--accent, #ffe082);font-size:13px;font-weight:800;letter-spacing:.08em;text-transform:uppercase}
+.panel-text[data-text-case="uppercase"] .text-copy h2,.panel-text[data-text-case="uppercase"] .text-copy p{text-transform:uppercase}
+.panel-text[data-text-case="title"] .text-copy h2,.panel-text[data-text-case="title"] .text-copy p{text-transform:capitalize}
+.countdown-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px}
+.countdown-cell{padding:18px 14px;border-radius:18px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);display:grid;gap:8px;min-width:120px}
+.countdown-cell em{font-style:normal;font-size:clamp(28px,4vw,62px);font-weight:900;color:var(--accent, #7bd6ff)}
+.countdown-cell span{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#d8e7df}
+.countdown-style-capsule .countdown-cell{border-radius:999px}
+.countdown-style-hero .countdown-cell{background:linear-gradient(180deg, rgba(255,255,255,.14), rgba(255,255,255,.04))}
 .audio-mini,.rss-mini{position:relative;z-index:2;height:100%;display:grid;align-content:center;justify-items:center;text-align:center;padding:28px}
 .audio-mini strong,.rss-mini strong{font-size:28px}
 .audio-mini span,.rss-mini span{color:#a8bbb1}
@@ -125,6 +147,12 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#09110d;col
 .panel-text.text-animation-zoom .text-copy{animation:textZoom 12s ease both}
 .panel-text.text-animation-ticker .text-copy{animation:textTicker 14s linear both}
 .panel-text.text-animation-pulse .text-copy{animation:textPulse 6s ease-in-out infinite}
+.panel-text.text-animation-glow .text-copy{animation:textGlow 7s ease-in-out infinite}
+.panel-text.text-animation-spotlight .text-copy{animation:textSpotlight 10s ease both}
+.panel-text.text-animation-bounce .text-copy{animation:textBounce 6s ease-in-out infinite}
+.panel-text.text-animation-flip-in .text-copy{animation:textFlipIn 10s ease both}
+.panel-text.text-animation-drift .text-copy{animation:textDrift 12s ease-in-out both}
+.panel-text.text-animation-reveal .text-copy{animation:textReveal 10s ease both}
 
 @keyframes kenburnsIn{0%{transform:scale(1.02) translate3d(0,0,0)}50%{transform:scale(1.08) translate3d(-1.2%,1%,0)}100%{transform:scale(1.13) translate3d(1.2%,-1%,0)}}
 @keyframes kenburnsOut{0%{transform:scale(1.15) translate3d(1%,-1%,0)}100%{transform:scale(1.03) translate3d(-1%,1.2%,0)}}
@@ -133,9 +161,17 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#09110d;col
 @keyframes floatRise{0%{transform:scale(1.08) translate3d(0,2.4%,0)}40%{transform:scale(1.12) translate3d(-1%,0,0)}100%{transform:scale(1.17) translate3d(1.4%,-3%,0)}}
 @keyframes cinemaSweep{0%{transform:scale(1.14) translate3d(-2.2%,-1.4%,0) rotate(.15deg)}45%{transform:scale(1.09) translate3d(1.1%,.5%,0) rotate(0)}100%{transform:scale(1.14) translate3d(2.2%,1.4%,0) rotate(-.15deg)}}
 @keyframes audioBounce{0%,100%{transform:scaleY(.72)}50%{transform:scaleY(1.18)}}
+@keyframes idleFloat{0%,100%{transform:translateY(0) scale(1)}50%{transform:translateY(-10px) scale(1.03)}}
+@keyframes idleSpin{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}
 @keyframes textFade{0%,100%{opacity:0;transform:translateY(18px)}10%,90%{opacity:1;transform:none}}
 @keyframes textSlideUp{0%{opacity:0;transform:translateY(48px)}14%,86%{opacity:1;transform:none}100%{opacity:0;transform:translateY(-48px)}}
 @keyframes textSlideLeft{0%{opacity:0;transform:translateX(70px)}14%,86%{opacity:1;transform:none}100%{opacity:0;transform:translateX(-70px)}}
 @keyframes textZoom{0%{opacity:0;transform:scale(.82)}18%,88%{opacity:1;transform:scale(1)}100%{opacity:0;transform:scale(1.08)}}
 @keyframes textTicker{0%{transform:translateX(16%)}100%{transform:translateX(-16%)}}
 @keyframes textPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.04)}}
+@keyframes textGlow{0%,100%{filter:drop-shadow(0 0 0 rgba(255,224,130,.0))}50%{filter:drop-shadow(0 0 26px rgba(255,224,130,.42))}}
+@keyframes textSpotlight{0%{opacity:0;clip-path:inset(0 100% 0 0)}20%,85%{opacity:1;clip-path:inset(0 0 0 0)}100%{opacity:0;clip-path:inset(0 0 0 100%)}}
+@keyframes textBounce{0%,100%{transform:translateY(0)}50%{transform:translateY(-16px)}}
+@keyframes textFlipIn{0%{opacity:0;transform:perspective(1200px) rotateX(-85deg)}18%,86%{opacity:1;transform:none}100%{opacity:0;transform:perspective(1200px) rotateX(40deg)}}
+@keyframes textDrift{0%{opacity:0;transform:translate3d(-24px,18px,0)}18%,88%{opacity:1;transform:translate3d(0,0,0)}100%{opacity:0;transform:translate3d(26px,-16px,0)}}
+@keyframes textReveal{0%{opacity:0;transform:scale(.94);letter-spacing:.08em}20%,88%{opacity:1;transform:scale(1);letter-spacing:0}100%{opacity:0;transform:scale(1.03)}}

@@ -3,6 +3,7 @@ const stage = document.querySelector("#stage");
 const form = document.querySelector("#pair-form");
 const input = document.querySelector("#code");
 const fullscreenToggle = document.querySelector("#fullscreen-toggle");
+const playerBoot = document.querySelector("#player-boot");
 
 const imageAnimations = ["kenburns-in", "kenburns-out", "pan-left", "pan-right", "float-rise", "cinema-sweep"];
 const transitionEffects = ["fade", "slide-left", "slide-right", "slide-up", "slide-down", "zoom-in", "zoom-out", "push", "wipe", "dissolve", "flip", "rotate", "cube", "blur", "crossfade", "split", "circle", "curtain"];
@@ -13,6 +14,19 @@ const textThemes = {
   sunset: { background: "linear-gradient(135deg,#4a1f1b 0%,#c86d3a 100%)", foreground: "#fff7ef" },
   royal: { background: "linear-gradient(135deg,#1d2448 0%,#4062c9 100%)", foreground: "#f6f8ff" },
   mono: { background: "linear-gradient(135deg,#111111 0%,#444444 100%)", foreground: "#fafafa" },
+  aurora: { background: "linear-gradient(140deg,#06161c 0%,#12474d 46%,#5b46c8 100%)", foreground: "#f7fffe" },
+  velvet: { background: "linear-gradient(140deg,#240c18 0%,#6a2141 55%,#cf6938 100%)", foreground: "#fff7f2" },
+  sunrise: { background: "linear-gradient(135deg,#2b1725 0%,#c95b48 52%,#ffb347 100%)", foreground: "#fffdf7" },
+};
+const textFontStacks = {
+  clean: '"Segoe UI", Arial, sans-serif',
+  display: 'Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif',
+  editorial: 'Georgia, "Times New Roman", serif',
+  condensed: '"Arial Narrow", "Roboto Condensed", Arial, sans-serif',
+  rounded: '"Trebuchet MS", "Segoe UI", Arial, sans-serif',
+  mono: '"Cascadia Mono", Consolas, monospace',
+  "arabic-ui": '"Segoe UI", Tahoma, Arial, sans-serif',
+  "urdu-nastaliq": '"Noto Nastaliq Urdu", "Segoe UI", Tahoma, serif',
 };
 
 let code = (params.get("code") || localStorage.getItem("openmarquee-code") || "").trim().toUpperCase();
@@ -21,6 +35,8 @@ let manifestKey = "";
 let index = 0;
 let timer = null;
 let controlTimer = null;
+const instanceId = localStorage.getItem("openmarquee-instance") || crypto.randomUUID();
+localStorage.setItem("openmarquee-instance", instanceId);
 
 input.value = code;
 if (code) localStorage.setItem("openmarquee-code", code);
@@ -53,7 +69,7 @@ function buildManifestKey(nextManifest) {
 async function sync(first = false) {
   if (!code) return;
   try {
-    const response = await fetch(`/api/player/${code}`, { cache: "no-store" });
+    const response = await fetch(`/api/player/${code}?instance=${encodeURIComponent(instanceId)}`, { cache: "no-store" });
     if (!response.ok) throw new Error();
     const nextManifest = await response.json();
     const nextKey = buildManifestKey(nextManifest);
@@ -64,6 +80,8 @@ async function sync(first = false) {
     manifest = nextManifest;
     manifestKey = nextKey;
 
+    document.body.classList.remove("player-loading");
+    playerBoot.style.display = "none";
     pair.style.display = "none";
     stage.style.display = "block";
     stage.dataset.fitMode = manifest.fit_mode || "contain";
@@ -77,6 +95,8 @@ async function sync(first = false) {
       code = "";
       manifest = null;
       manifestKey = "";
+      document.body.classList.remove("player-loading");
+      playerBoot.style.display = "none";
       pair.style.display = "grid";
       stage.style.display = "none";
       input.value = "";
@@ -99,12 +119,20 @@ function applyTransitionClass(element, effect) {
   element.classList.add(`transition-${effect}`);
 }
 
+function cleanupScene(scene) {
+  if (!scene) return;
+  scene.querySelectorAll("[data-timer-id]").forEach((node) => {
+    window.clearInterval(Number(node.dataset.timerId));
+  });
+}
+
 function transitionScene(nextScene) {
   const currentScene = stage.querySelector(".scene.active");
   const effect = currentTransitionEffect();
   applyTransitionClass(nextScene, effect);
 
   if (!currentScene) {
+    stage.querySelectorAll(".scene").forEach((scene) => cleanupScene(scene));
     stage.replaceChildren(nextScene);
     requestAnimationFrame(() => nextScene.classList.add("active"));
     return;
@@ -121,7 +149,10 @@ function transitionScene(nextScene) {
     });
   });
   window.setTimeout(() => {
-    if (currentScene.parentNode === stage) currentScene.remove();
+    if (currentScene.parentNode === stage) {
+      cleanupScene(currentScene);
+      currentScene.remove();
+    }
   }, 1100);
 }
 
@@ -146,6 +177,14 @@ function normalizeYouTubeUrl(value) {
   }
 }
 
+function normalizePowerPointUrl(value, slideIndex = 1) {
+  try {
+    return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(value)}&wdSlideIndex=${slideIndex}`;
+  } catch {
+    return value;
+  }
+}
+
 function fitMode() {
   return manifest?.fit_mode || "contain";
 }
@@ -159,18 +198,21 @@ function sceneMediaDuration(items) {
 }
 
 function playbackNeedsTimer(items) {
-  return !items.some((item) => ["video", "stream", "iptv", "audio"].includes(item.kind));
+  return !items.some((item) => ["video", "stream", "iptv", "audio", "countdown"].includes(item.kind));
 }
 
 function createIdleScene() {
   const scene = document.createElement("section");
   scene.className = "scene scene-idle";
   scene.innerHTML = `
-    <div class="message-shell">
-      <div class="message-mark"></div>
+    <div class="message-shell idle-brand-shell">
+      <div class="idle-orbit idle-orbit-one"></div>
+      <div class="idle-orbit idle-orbit-two"></div>
+      <div class="message-mark idle-mark"><img src="/static/logo.svg" alt="OpenMarquee"></div>
       <div class="message">
         <strong>Screen connected</strong>
         <span>Assign a playlist from the OpenMarquee dashboard.</span>
+        <small>Animated standby mode keeps the screen polished until media is published.</small>
       </div>
     </div>
   `;
@@ -289,12 +331,101 @@ async function createRssPanel(item) {
   return panel;
 }
 
+function createDocumentPanel(item) {
+  const panel = document.createElement("div");
+  panel.className = item.kind === "powerpoint" ? "panel panel-youtube" : "panel panel-iframe";
+  const iframe = document.createElement("iframe");
+  iframe.className = "panel-media panel-iframe-media";
+  iframe.referrerPolicy = "strict-origin-when-cross-origin";
+  iframe.loading = "eager";
+  iframe.title = item.name || "Document";
+  const metadata = item.metadata || {};
+  const pageCount = Math.max(1, Number(metadata.page_count || 1));
+  const intervalMs = Math.max(2, Number(metadata.slide_interval || item.duration || 10)) * 1000;
+  let pageIndex = 1;
+  const setSrc = () => {
+    iframe.src = item.kind === "powerpoint"
+      ? normalizePowerPointUrl(item.url, pageIndex)
+      : `${item.url}#page=${pageIndex}&view=FitH`;
+  };
+  setSrc();
+  panel.appendChild(iframe);
+  if (pageCount > 1) {
+    const timerId = window.setInterval(() => {
+      pageIndex = pageIndex >= pageCount ? 1 : pageIndex + 1;
+      setSrc();
+    }, intervalMs);
+    panel.dataset.timerId = String(timerId);
+  }
+  return panel;
+}
+
+function countdownParts(targetAt) {
+  const target = new Date(targetAt).getTime();
+  const remainingMs = Math.max(0, target - Date.now());
+  const totalSeconds = Math.floor(remainingMs / 1000);
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return { remainingMs, days, hours, minutes, seconds };
+}
+
+function createCountdownPanel(item) {
+  const metadata = item.metadata || {};
+  const theme = textThemes[metadata.theme] || textThemes.royal;
+  const panel = document.createElement("div");
+  panel.className = `panel panel-text countdown-style-${metadata.style || "flip"}`;
+  panel.style.background = metadata.background || theme.background;
+  panel.style.color = metadata.foreground || theme.foreground;
+  panel.style.setProperty("--accent", metadata.accent || "#7bd6ff");
+  panel.innerHTML = `
+    <div class="text-stage countdown-stage">
+      <div class="text-copy countdown-copy">
+        <span class="text-badge">${escapeHtml(metadata.badge || "Live countdown")}</span>
+        <strong>${escapeHtml(item.name || "Countdown")}</strong>
+        <h2>${escapeHtml(metadata.message || "Starting soon")}</h2>
+        <div class="countdown-grid">
+          <div class="countdown-cell"><em data-countdown-days>00</em><span>Days</span></div>
+          <div class="countdown-cell"><em data-countdown-hours>00</em><span>Hours</span></div>
+          <div class="countdown-cell"><em data-countdown-minutes>00</em><span>Minutes</span></div>
+          <div class="countdown-cell"><em data-countdown-seconds>00</em><span>Seconds</span></div>
+        </div>
+        <p data-countdown-status>${escapeHtml(metadata.target_at || "")}</p>
+      </div>
+    </div>
+  `;
+  const days = panel.querySelector("[data-countdown-days]");
+  const hours = panel.querySelector("[data-countdown-hours]");
+  const minutes = panel.querySelector("[data-countdown-minutes]");
+  const seconds = panel.querySelector("[data-countdown-seconds]");
+  const status = panel.querySelector("[data-countdown-status]");
+  const tick = () => {
+    const parts = countdownParts(metadata.target_at);
+    days.textContent = String(parts.days).padStart(2, "0");
+    hours.textContent = String(parts.hours).padStart(2, "0");
+    minutes.textContent = String(parts.minutes).padStart(2, "0");
+    seconds.textContent = String(parts.seconds).padStart(2, "0");
+    if (parts.remainingMs <= 0) {
+      status.textContent = metadata.complete_message || "Starting now";
+      window.clearInterval(intervalId);
+      window.setTimeout(() => next(), 1200);
+    }
+  };
+  const intervalId = window.setInterval(tick, 1000);
+  tick();
+  panel.dataset.timerId = String(intervalId);
+  return panel;
+}
+
 async function createPanel(item, visualIndex, splitMode) {
   if (item.kind === "image") return createImagePanel(item, visualIndex, splitMode);
   if (item.kind === "video" || item.kind === "stream" || item.kind === "iptv") return createVideoPanel(item);
   if (item.kind === "audio") return createAudioPanel(item);
   if (item.kind === "rss") return createRssPanel(item);
+  if (item.kind === "pdf" || item.kind === "powerpoint") return createDocumentPanel(item);
   if (item.kind === "text") return createTextPanel(item);
+  if (item.kind === "countdown") return createCountdownPanel(item);
   return createIframePanel(item);
 }
 
@@ -305,11 +436,20 @@ function createTextPanel(item) {
   panel.className = `panel panel-text text-animation-${metadata.animation || "fade"}`;
   panel.style.background = metadata.background || theme.background;
   panel.style.color = metadata.foreground || theme.foreground;
+  panel.style.setProperty("--accent", metadata.accent || "#ffe082");
+  panel.style.setProperty("--headline-scale", `${Number(metadata.font_scale || 100) / 100}`);
+  panel.style.setProperty("--text-font", textFontStacks[metadata.font_family] || textFontStacks.clean);
+  panel.dataset.textCase = metadata.text_case || "none";
+  panel.dir = "auto";
+  const badge = metadata.badge ? `<span class="text-badge">${escapeHtml(metadata.badge)}</span>` : "";
+  const body = metadata.body ? `<p>${escapeHtml(metadata.body)}</p>` : "";
   panel.innerHTML = `
     <div class="text-stage text-align-${metadata.align || "center"}">
       <div class="text-copy">
+        ${badge}
         <strong>${escapeHtml(item.name || "Text slide")}</strong>
-        <p>${escapeHtml(metadata.text || "")}</p>
+        <h2>${escapeHtml(metadata.text || "")}</h2>
+        ${body}
       </div>
     </div>
   `;
@@ -430,4 +570,9 @@ function escapeHtml(value) {
 
 showFullscreenControl();
 if (code) sync(true);
+else {
+  document.body.classList.remove("player-loading");
+  playerBoot.style.display = "none";
+  pair.style.display = "grid";
+}
 window.setInterval(() => sync(false), 15000);

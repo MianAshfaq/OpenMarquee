@@ -22,6 +22,10 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
+try:
+    from pypdf import PdfReader
+except Exception:  # noqa: BLE001
+    PdfReader = None
 
 ROOT = Path(__file__).parent
 DB_PATH = ROOT / "data" / "openmarquee.db"
@@ -59,7 +63,19 @@ URL_MEDIA_KINDS = {
     "audio",
     "html",
 }
-DIRECT_MEDIA_KINDS = {"image", "video", "pdf", "audio", "html", "text"}
+DIRECT_MEDIA_KINDS = {"image", "video", "pdf", "audio", "html", "text", "countdown"}
+INDUSTRY_PROFILES = {
+    "retail",
+    "hospital",
+    "office",
+    "education",
+    "hotel",
+    "restaurant",
+    "government",
+    "warehouse",
+    "transport",
+    "events",
+}
 SCREEN_BRANDS = {
     "unknown",
     "samsung",
@@ -116,8 +132,11 @@ VENDOR_BRAND_MAP = {
     "hisense": "hisense",
     "amazon": "amazon-fire-tv",
 }
-TEXT_ANIMATIONS = {"none", "fade", "slide-up", "slide-left", "zoom", "ticker", "pulse"}
-TEXT_THEMES = {"midnight", "emerald", "sunset", "royal", "mono"}
+TEXT_ANIMATIONS = {"none", "fade", "slide-up", "slide-left", "zoom", "ticker", "pulse", "glow", "spotlight", "bounce", "flip-in", "drift", "reveal"}
+TEXT_THEMES = {"midnight", "emerald", "sunset", "royal", "mono", "aurora", "velvet", "sunrise"}
+TEXT_FONTS = {"clean", "display", "editorial", "condensed", "rounded", "mono", "arabic-ui", "urdu-nastaliq"}
+TEXT_ALIGNMENTS = {"left", "center", "right"}
+TEXT_CASES = {"none", "uppercase", "title"}
 
 
 logger = logging.getLogger("openmarquee")
@@ -187,6 +206,7 @@ def init_db() -> None:
                 ip_address TEXT,
                 mac_address TEXT,
                 vendor_name TEXT,
+                profile TEXT,
                 notes TEXT,
                 paired_at INTEGER,
                 code_expires_at INTEGER,
@@ -206,6 +226,15 @@ def init_db() -> None:
                 details TEXT NOT NULL DEFAULT '{}',
                 created_at INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS player_presence (
+                screen_id INTEGER NOT NULL,
+                instance_id TEXT NOT NULL,
+                user_agent TEXT,
+                last_ip TEXT,
+                last_seen INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY(screen_id, instance_id)
+            );
             """
         )
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(screens)").fetchall()}
@@ -223,6 +252,8 @@ def init_db() -> None:
             conn.execute("ALTER TABLE screens ADD COLUMN mac_address TEXT")
         if "vendor_name" not in columns:
             conn.execute("ALTER TABLE screens ADD COLUMN vendor_name TEXT")
+        if "profile" not in columns:
+            conn.execute("ALTER TABLE screens ADD COLUMN profile TEXT")
         if "paired_at" not in columns:
             conn.execute("ALTER TABLE screens ADD COLUMN paired_at INTEGER")
         if "code_expires_at" not in columns:
@@ -363,6 +394,78 @@ def normalize_text_theme(value: str) -> str:
     if cleaned not in TEXT_THEMES:
         raise HTTPException(400, "Invalid text theme")
     return cleaned
+
+
+def normalize_text_font(value: str) -> str:
+    cleaned = (value or "clean").strip().lower()
+    if cleaned not in TEXT_FONTS:
+        raise HTTPException(400, "Invalid text font")
+    return cleaned
+
+
+def normalize_text_align(value: str) -> str:
+    cleaned = (value or "center").strip().lower()
+    if cleaned not in TEXT_ALIGNMENTS:
+        raise HTTPException(400, "Invalid text alignment")
+    return cleaned
+
+
+def normalize_text_case(value: str) -> str:
+    cleaned = (value or "none").strip().lower()
+    if cleaned not in TEXT_CASES:
+        raise HTTPException(400, "Invalid text case")
+    return cleaned
+
+
+def normalize_profile(value: str) -> str | None:
+    cleaned = (value or "").strip().lower()
+    if not cleaned:
+        return None
+    if cleaned not in INDUSTRY_PROFILES:
+        raise HTTPException(400, "Invalid industry profile")
+    return cleaned
+
+
+def normalize_profiles(values: list[str]) -> list[str]:
+    cleaned: list[str] = []
+    for value in values:
+        profile = normalize_profile(value)
+        if profile and profile not in cleaned:
+            cleaned.append(profile)
+    return cleaned
+
+
+def parse_json(raw: str | None, fallback):
+    try:
+        return json.loads(raw or "")
+    except Exception:  # noqa: BLE001
+        return fallback
+
+
+def parse_pdf_page_count(path: Path) -> int:
+    if PdfReader is None:
+        return 1
+    try:
+        return max(1, len(PdfReader(str(path)).pages))
+    except Exception:  # noqa: BLE001
+        return 1
+
+
+def read_selected_profiles() -> list[str]:
+    value = read_setting("selected_profiles")
+    parsed = parse_json(value, [])
+    if not isinstance(parsed, list):
+        return []
+    return [profile for profile in parsed if profile in INDUSTRY_PROFILES]
+
+
+def write_selected_profiles(profiles: list[str]) -> None:
+    write_setting("selected_profiles", json.dumps(normalize_profiles(profiles)))
+
+
+def remote_ip(request: Request) -> str:
+    forwarded = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    return forwarded or (request.client.host if request.client else "")
 
 
 def make_pairing_code() -> str:
@@ -689,7 +792,6 @@ def auth_session(request: Request) -> dict:
     return {
         "authenticated": bool(username),
         "username": username or ADMIN_USERNAME,
-        "bootstrap_path": str(BOOTSTRAP_PATH) if BOOTSTRAP_PATH.exists() else None,
         "mfa_enabled": read_setting("mfa_enabled") == "1",
     }
 
@@ -792,11 +894,17 @@ def dashboard(_admin: str = Depends(require_admin)) -> dict:
     playlists = rows("SELECT * FROM playlists ORDER BY created_at DESC")
     screens = rows("SELECT * FROM screens ORDER BY created_at DESC")
     recent_logs = rows("SELECT * FROM activity_logs ORDER BY created_at DESC LIMIT 30")
+    presence_rows = rows("SELECT * FROM player_presence")
+    presence_by_screen: dict[int, list[dict]] = {}
+    now = int(time.time())
+    for row in presence_rows:
+        if now - int(row.get("last_seen") or 0) > 180:
+            continue
+        presence_by_screen.setdefault(int(row["screen_id"]), []).append(row)
     for playlist in playlists:
         playlist["items"] = json.loads(playlist["items"])
         playlist["transition_modes"] = normalize_transition_modes(playlist.get("transition_modes") or json.dumps([playlist.get("transition_mode") or "fade"]))
     folder_lookup = {folder["id"]: folder for folder in folders}
-    now = int(time.time())
     for item in media:
         item["metadata"] = json.loads(item.get("metadata") or "{}")
         item["folder"] = folder_lookup.get(item.get("folder_id"))
@@ -820,8 +928,11 @@ def dashboard(_admin: str = Depends(require_admin)) -> dict:
             "no_ip": "No IP saved",
         }[network_status]
         screen["pairing_expires_in"] = max(0, int(screen.get("code_expires_at") or 0) - now) if not screen.get("paired_at") else None
+        screen["connected_instances"] = len(presence_by_screen.get(int(screen["id"]), []))
+        screen["profile"] = normalize_profile(screen.get("profile") or "") or None
     for entry in recent_logs:
         entry["details"] = json.loads(entry.get("details") or "{}")
+    selected_profiles = read_selected_profiles()
     reports = {
         "playback": {
             "assigned_screens": sum(1 for screen in screens if screen.get("playlist_id")),
@@ -837,14 +948,28 @@ def dashboard(_admin: str = Depends(require_admin)) -> dict:
             "total_media": len(media),
             "folders": len(folders),
             "text_assets": sum(1 for item in media if item.get("kind") == "text"),
+            "countdowns": sum(1 for item in media if item.get("kind") == "countdown"),
             "remote_sources": sum(1 for item in media if item.get("source_url")),
+        },
+        "pairing": {
+            "active_codes": sum(1 for screen in screens if screen.get("paired_at")),
+            "live_instances": sum(screen.get("connected_instances", 0) for screen in screens),
+            "single_instance_codes": sum(1 for screen in screens if screen.get("connected_instances", 0) == 1),
+            "shared_codes": sum(1 for screen in screens if screen.get("connected_instances", 0) > 1),
+        },
+        "network": {
+            "lan_ready": True,
+            "cloud_ready": True,
+            "internet_required_for_local_media": False,
+            "internet_required_for_remote_urls": True,
         },
         "security": {
             "failed_logins": sum(1 for entry in recent_logs if entry["action"] in {"failed_login", "failed_mfa"}),
             "recent_logins": sum(1 for entry in recent_logs if entry["action"] == "login"),
         },
     }
-    return {"media": media, "folders": folders, "playlists": playlists, "screens": screens, "logs": recent_logs, "reports": reports}
+    settings = {"selected_profiles": selected_profiles, "profiles_configured": bool(selected_profiles)}
+    return {"media": media, "folders": folders, "playlists": playlists, "screens": screens, "logs": recent_logs, "reports": reports, "settings": settings}
 
 
 @app.post("/api/media")
@@ -871,10 +996,14 @@ def upload_media(folder_id: int = Form(0), file: UploadFile = File(...), _admin:
         destination.unlink(missing_ok=True)
         raise HTTPException(400, f"File is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit")
     chosen_folder_id = folder_id or None
+    metadata = {}
+    if kind == "pdf":
+        metadata["page_count"] = parse_pdf_page_count(destination)
+        metadata["slide_interval"] = 10
     with db() as conn:
         cursor = conn.execute(
             "INSERT INTO media(name, filename, kind, size, folder_id, source_url, metadata, created_at) VALUES(?,?,?,?,?,?,?,?)",
-            (file.filename or filename, filename, kind, destination.stat().st_size, chosen_folder_id, None, "{}", int(time.time())),
+            (file.filename or filename, filename, kind, destination.stat().st_size, chosen_folder_id, None, json.dumps(metadata), int(time.time())),
         )
         media_id = cursor.lastrowid
     log_event(_admin, "upload", "media", file.filename or filename, {"media_id": media_id, "kind": kind})
@@ -887,6 +1016,8 @@ def create_url_media(
     kind: str = Form(...),
     source_url: str = Form(...),
     folder_id: int = Form(0),
+    page_count: int = Form(1),
+    slide_interval: int = Form(10),
     _admin: str = Depends(require_admin),
 ) -> dict:
     cleaned_kind = kind.strip().lower()
@@ -894,10 +1025,15 @@ def create_url_media(
         raise HTTPException(400, "Unsupported source type")
     normalized_url = normalize_source_url(source_url)
     filename = f"url-{secrets.token_hex(8)}"
+    metadata = {}
+    if cleaned_kind in {"pdf", "powerpoint"}:
+        metadata["page_count"] = max(1, min(500, int(page_count or 1)))
+        metadata["slide_interval"] = max(2, min(300, int(slide_interval or 10)))
+        metadata["office_embed"] = cleaned_kind == "powerpoint"
     with db() as conn:
         cursor = conn.execute(
             "INSERT INTO media(name, filename, kind, size, folder_id, source_url, metadata, created_at) VALUES(?,?,?,?,?,?,?,?)",
-            (name.strip() or cleaned_kind.title(), filename, cleaned_kind, 0, folder_id or None, normalized_url, "{}", int(time.time())),
+            (name.strip() or cleaned_kind.title(), filename, cleaned_kind, 0, folder_id or None, normalized_url, json.dumps(metadata), int(time.time())),
         )
         media_id = cursor.lastrowid
     log_event(_admin, "create_source", "media", name.strip() or cleaned_kind.title(), {"media_id": media_id, "kind": cleaned_kind})
@@ -908,12 +1044,18 @@ def create_url_media(
 def create_text_media(
     name: str = Form(...),
     text: str = Form(...),
+    body: str = Form(""),
+    badge: str = Form(""),
     folder_id: int = Form(0),
     animation: str = Form("fade"),
     theme: str = Form("midnight"),
+    font_family: str = Form("clean"),
+    font_scale: int = Form(100),
     background: str = Form("#13261f"),
     foreground: str = Form("#ffffff"),
+    accent: str = Form("#ffe082"),
     align: str = Form("center"),
+    text_case: str = Form("none"),
     _admin: str = Depends(require_admin),
 ) -> dict:
     cleaned_text = text.strip()
@@ -921,11 +1063,17 @@ def create_text_media(
         raise HTTPException(400, "Text content is required")
     metadata = {
         "text": cleaned_text,
+        "body": body.strip(),
+        "badge": badge.strip(),
         "animation": normalize_text_animation(animation),
         "theme": normalize_text_theme(theme),
+        "font_family": normalize_text_font(font_family),
+        "font_scale": max(70, min(160, int(font_scale or 100))),
         "background": background.strip() or "#13261f",
         "foreground": foreground.strip() or "#ffffff",
-        "align": align.strip().lower() or "center",
+        "accent": accent.strip() or "#ffe082",
+        "align": normalize_text_align(align),
+        "text_case": normalize_text_case(text_case),
     }
     filename = f"text-{secrets.token_hex(8)}.json"
     with db() as conn:
@@ -938,6 +1086,121 @@ def create_text_media(
     return {"id": media_id, "name": name, "filename": filename, "kind": "text", "metadata": metadata}
 
 
+@app.post("/api/library/countdown")
+def create_countdown_media(
+    name: str = Form(...),
+    target_at: str = Form(...),
+    badge: str = Form("Live countdown"),
+    message: str = Form("The event is about to begin"),
+    complete_message: str = Form("Starting now"),
+    folder_id: int = Form(0),
+    theme: str = Form("royal"),
+    style: str = Form("flip"),
+    background: str = Form("#13261f"),
+    foreground: str = Form("#ffffff"),
+    accent: str = Form("#7bd6ff"),
+    _admin: str = Depends(require_admin),
+) -> dict:
+    cleaned_target = target_at.strip()
+    if not cleaned_target:
+        raise HTTPException(400, "Countdown target time is required")
+    metadata = {
+        "target_at": cleaned_target,
+        "badge": badge.strip() or "Live countdown",
+        "message": message.strip() or "The event is about to begin",
+        "complete_message": complete_message.strip() or "Starting now",
+        "theme": normalize_text_theme(theme),
+        "style": (style.strip().lower() or "flip"),
+        "background": background.strip() or "#13261f",
+        "foreground": foreground.strip() or "#ffffff",
+        "accent": accent.strip() or "#7bd6ff",
+    }
+    filename = f"countdown-{secrets.token_hex(8)}.json"
+    with db() as conn:
+        cursor = conn.execute(
+            "INSERT INTO media(name, filename, kind, size, folder_id, source_url, metadata, created_at) VALUES(?,?,?,?,?,?,?,?)",
+            (name.strip() or "Countdown", filename, "countdown", len(cleaned_target.encode("utf-8")), folder_id or None, None, json.dumps(metadata), int(time.time())),
+        )
+        media_id = cursor.lastrowid
+    log_event(_admin, "create_countdown", "media", name.strip() or "Countdown", {"media_id": media_id})
+    return {"id": media_id, "name": name, "filename": filename, "kind": "countdown", "metadata": metadata}
+
+
+@app.put("/api/media/{media_id}/rich")
+def update_rich_media(
+    media_id: int,
+    name: str = Form(...),
+    text: str = Form(""),
+    body: str = Form(""),
+    badge: str = Form(""),
+    target_at: str = Form(""),
+    message: str = Form(""),
+    complete_message: str = Form(""),
+    folder_id: int = Form(0),
+    animation: str = Form("fade"),
+    theme: str = Form("midnight"),
+    font_family: str = Form("clean"),
+    font_scale: int = Form(100),
+    background: str = Form("#13261f"),
+    foreground: str = Form("#ffffff"),
+    accent: str = Form("#ffe082"),
+    align: str = Form("center"),
+    text_case: str = Form("none"),
+    style: str = Form("flip"),
+    _admin: str = Depends(require_admin),
+) -> dict:
+    result = rows("SELECT kind FROM media WHERE id=?", (media_id,))
+    if not result:
+        raise HTTPException(404, "Media not found")
+    kind = result[0]["kind"]
+    if kind == "text":
+        cleaned_text = text.strip()
+        if not cleaned_text:
+            raise HTTPException(400, "Text content is required")
+        metadata = {
+            "text": cleaned_text,
+            "body": body.strip(),
+            "badge": badge.strip(),
+            "animation": normalize_text_animation(animation),
+            "theme": normalize_text_theme(theme),
+            "font_family": normalize_text_font(font_family),
+            "font_scale": max(70, min(160, int(font_scale or 100))),
+            "background": background.strip() or "#13261f",
+            "foreground": foreground.strip() or "#ffffff",
+            "accent": accent.strip() or "#ffe082",
+            "align": normalize_text_align(align),
+            "text_case": normalize_text_case(text_case),
+        }
+        size = len(cleaned_text.encode("utf-8"))
+    elif kind == "countdown":
+        cleaned_target = target_at.strip()
+        if not cleaned_target:
+            raise HTTPException(400, "Countdown target time is required")
+        metadata = {
+            "target_at": cleaned_target,
+            "badge": badge.strip() or "Live countdown",
+            "message": message.strip() or "The event is about to begin",
+            "complete_message": complete_message.strip() or "Starting now",
+            "theme": normalize_text_theme(theme),
+            "style": style.strip().lower() or "flip",
+            "background": background.strip() or "#13261f",
+            "foreground": foreground.strip() or "#ffffff",
+            "accent": accent.strip() or "#7bd6ff",
+        }
+        size = len(cleaned_target.encode("utf-8"))
+    else:
+        raise HTTPException(400, "Only text and countdown media can be edited here")
+    with db() as conn:
+        cursor = conn.execute(
+            "UPDATE media SET name=?, folder_id=?, metadata=?, size=? WHERE id=?",
+            (name.strip() or kind.title(), folder_id or None, json.dumps(metadata), size, media_id),
+        )
+        if cursor.rowcount == 0:
+            raise HTTPException(404, "Media not found")
+    log_event(_admin, "update_rich_media", "media", name.strip() or kind.title(), {"media_id": media_id, "kind": kind})
+    return {"ok": True, "kind": kind, "metadata": metadata}
+
+
 @app.post("/api/folders")
 def create_folder(name: str = Form(...), _admin: str = Depends(require_admin)) -> dict:
     cleaned_name = name.strip()
@@ -948,6 +1211,19 @@ def create_folder(name: str = Form(...), _admin: str = Depends(require_admin)) -
         folder_id = cursor.lastrowid
     log_event(_admin, "create", "folder", cleaned_name, {"folder_id": folder_id})
     return {"id": folder_id, "name": cleaned_name}
+
+
+@app.post("/api/settings/profiles")
+def update_profiles_setting(profiles: str = Form("[]"), _admin: str = Depends(require_admin)) -> dict:
+    parsed = parse_json(profiles, [])
+    if not isinstance(parsed, list):
+        raise HTTPException(400, "Profiles must be a JSON array")
+    cleaned = normalize_profiles([str(item) for item in parsed])
+    if not cleaned:
+        raise HTTPException(400, "Choose at least one deployment profile")
+    write_selected_profiles(cleaned)
+    log_event(_admin, "update_profiles", "settings", "deployment_profiles", {"profiles": cleaned})
+    return {"ok": True, "selected_profiles": cleaned}
 
 
 @app.put("/api/media/{media_id}/folder")
@@ -1081,6 +1357,7 @@ def create_screen(
     brand: str = Form("unknown"),
     model: str = Form(""),
     runtime: str = Form("browser"),
+    profile: str = Form(""),
     ip_address: str = Form(""),
     notes: str = Form(""),
     _admin: str = Depends(require_admin),
@@ -1089,10 +1366,11 @@ def create_screen(
     normalized_ip = normalize_ip_address(ip_address)
     cleaned_brand = normalize_brand(brand)
     cleaned_runtime = normalize_runtime(runtime)
+    cleaned_profile = normalize_profile(profile)
     mac_address, vendor_name, cleaned_brand = auto_brand_for(normalized_ip, cleaned_brand)
     with db() as conn:
         cursor = conn.execute(
-            "INSERT INTO screens(name, code, orientation, brand, model, runtime, ip_address, mac_address, vendor_name, notes, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO screens(name, code, orientation, brand, model, runtime, ip_address, mac_address, vendor_name, profile, notes, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 name.strip() or "New screen",
                 code,
@@ -1103,6 +1381,7 @@ def create_screen(
                 normalized_ip,
                 mac_address,
                 vendor_name,
+                cleaned_profile,
                 notes.strip() or None,
                 int(time.time()),
             ),
@@ -1122,6 +1401,7 @@ def regenerate_pairing_code(screen_id: int, _admin: str = Depends(require_admin)
     next_code = make_pairing_code()
     expires_at = next_code_expiry()
     with db() as conn:
+        conn.execute("DELETE FROM player_presence WHERE screen_id=?", (screen_id,))
         cursor = conn.execute("UPDATE screens SET code=?, paired_at=NULL, code_expires_at=? WHERE id=?", (next_code, expires_at, screen_id))
         if cursor.rowcount == 0:
             raise HTTPException(404, "Screen not found")
@@ -1181,6 +1461,7 @@ def update_screen(
     brand: str = Form("unknown"),
     model: str = Form(""),
     runtime: str = Form("browser"),
+    profile: str = Form(""),
     ip_address: str = Form(""),
     notes: str = Form(""),
     _admin: str = Depends(require_admin),
@@ -1188,10 +1469,11 @@ def update_screen(
     normalized_ip = normalize_ip_address(ip_address)
     cleaned_brand = normalize_brand(brand)
     cleaned_runtime = normalize_runtime(runtime)
+    cleaned_profile = normalize_profile(profile)
     mac_address, vendor_name, cleaned_brand = auto_brand_for(normalized_ip, cleaned_brand)
     with db() as conn:
         cursor = conn.execute(
-            "UPDATE screens SET name=?, orientation=?, brand=?, model=?, runtime=?, ip_address=?, mac_address=?, vendor_name=?, notes=? WHERE id=?",
+            "UPDATE screens SET name=?, orientation=?, brand=?, model=?, runtime=?, ip_address=?, mac_address=?, vendor_name=?, profile=?, notes=? WHERE id=?",
             (
                 name.strip() or "Unnamed screen",
                 orientation,
@@ -1201,6 +1483,7 @@ def update_screen(
                 normalized_ip,
                 mac_address,
                 vendor_name,
+                cleaned_profile,
                 notes.strip() or None,
                 screen_id,
             ),
@@ -1217,13 +1500,14 @@ def delete_screen(screen_id: int, _admin: str = Depends(require_admin)) -> dict:
     if not screen_rows:
         raise HTTPException(404, "Screen not found")
     with db() as conn:
+        conn.execute("DELETE FROM player_presence WHERE screen_id=?", (screen_id,))
         cursor = conn.execute("DELETE FROM screens WHERE id=?", (screen_id,))
     log_event(_admin, "delete", "screen", screen_rows[0]["name"], {"screen_id": screen_id})
     return {"ok": True}
 
 
 @app.get("/api/player/{code}")
-def player_manifest(code: str) -> dict:
+def player_manifest(request: Request, code: str, instance: str = "") -> dict:
     screens = rows("SELECT * FROM screens WHERE code=?", (code.upper(),))
     if not screens:
         raise HTTPException(404, "Pairing code not found")
@@ -1238,6 +1522,26 @@ def player_manifest(code: str) -> dict:
             screen["paired_at"] = now
         else:
             conn.execute("UPDATE screens SET last_seen=? WHERE id=?", (now, screen["id"]))
+        cleaned_instance = (instance or "").strip()[:80]
+        if cleaned_instance:
+            conn.execute(
+                """
+                INSERT INTO player_presence(screen_id, instance_id, user_agent, last_ip, last_seen, created_at)
+                VALUES(?,?,?,?,?,?)
+                ON CONFLICT(screen_id, instance_id) DO UPDATE SET
+                    user_agent=excluded.user_agent,
+                    last_ip=excluded.last_ip,
+                    last_seen=excluded.last_seen
+                """,
+                (
+                    screen["id"],
+                    cleaned_instance,
+                    (request.headers.get("user-agent") or "")[:400],
+                    remote_ip(request)[:80],
+                    now,
+                    now,
+                ),
+            )
     items: list[dict] = []
     playlist_meta = {"layout_mode": "full", "fit_mode": "contain", "transition_mode": "fade", "transition_modes": ["fade"]}
     if screen["playlist_id"]:

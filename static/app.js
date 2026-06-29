@@ -5,10 +5,64 @@ const state = {
   screens: [],
   logs: [],
   reports: {},
+  settings: { selected_profiles: [], profiles_configured: false },
   activeFolderId: "all",
-  auth: { authenticated: false, username: "admin", mfa_enabled: false, bootstrap_path: null },
+  auth: { authenticated: false, username: "", mfa_enabled: false },
 };
 const selectedScreens = new Set();
+const industryProfiles = [
+  ["retail", "Retail"],
+  ["hospital", "Hospital"],
+  ["office", "Office"],
+  ["education", "Education"],
+  ["hotel", "Hotel"],
+  ["restaurant", "Restaurant"],
+  ["government", "Government"],
+  ["warehouse", "Warehouse"],
+  ["transport", "Transport"],
+  ["events", "Events"],
+];
+const textAnimationOptions = [
+  ["fade", "Fade"],
+  ["slide-up", "Slide up"],
+  ["slide-left", "Slide left"],
+  ["zoom", "Zoom"],
+  ["ticker", "Ticker"],
+  ["pulse", "Pulse"],
+  ["glow", "Glow"],
+  ["spotlight", "Spotlight"],
+  ["bounce", "Bounce"],
+  ["flip-in", "Flip in"],
+  ["drift", "Drift"],
+  ["reveal", "Reveal"],
+  ["none", "None"],
+];
+const textThemeOptions = [
+  ["midnight", "Midnight"],
+  ["emerald", "Emerald"],
+  ["sunset", "Sunset"],
+  ["royal", "Royal"],
+  ["mono", "Mono"],
+  ["aurora", "Aurora"],
+  ["velvet", "Velvet"],
+  ["sunrise", "Sunrise"],
+];
+const textFontOptions = [
+  ["clean", "Clean Sans"],
+  ["display", "Display Bold"],
+  ["editorial", "Editorial Serif"],
+  ["condensed", "Condensed"],
+  ["rounded", "Rounded"],
+  ["mono", "Mono"],
+  ["arabic-ui", "Arabic UI"],
+  ["urdu-nastaliq", "Urdu Nastaliq"],
+];
+const textPresets = {
+  retail: { name: "Retail Spotlight", badge: "Limited offer", text: "Weekend flash sale", body: "Up to 40% off selected collections. Visit today before 9 PM.", animation: "glow", theme: "sunrise", font_family: "display", font_scale: "110", accent: "#ffe082", background: "", foreground: "", align: "center", text_case: "none" },
+  corporate: { name: "Corporate Welcome", badge: "Welcome", text: "Innovation starts here", body: "Meeting begins at 10:30 AM in the executive boardroom.", animation: "reveal", theme: "royal", font_family: "clean", font_scale: "100", accent: "#7bd6ff", background: "", foreground: "", align: "left", text_case: "none" },
+  event: { name: "Event Countdown", badge: "Live today", text: "Main stage opens in 15 minutes", body: "Please take your seats and keep the aisles clear for the opening sequence.", animation: "spotlight", theme: "aurora", font_family: "display", font_scale: "108", accent: "#c7ff6b", background: "", foreground: "", align: "center", text_case: "uppercase" },
+  urgent: { name: "Urgent Notice", badge: "Alert", text: "Temporary access change", body: "Use the south entrance until maintenance is complete on level 2.", animation: "bounce", theme: "velvet", font_family: "condensed", font_scale: "102", accent: "#ff9f6f", background: "", foreground: "", align: "center", text_case: "uppercase" },
+};
 
 const transitionOptions = [
   ["none", "No transition"],
@@ -104,6 +158,7 @@ function mediaTypeLabel(kind) {
     pdf: "PDF",
     html: "HTML",
     audio: "Audio",
+    countdown: "Countdown",
     webpage: "Web page",
     dashboard: "Dashboard URL",
     youtube: "YouTube",
@@ -141,6 +196,10 @@ function screenRuntimeLabel(value) {
   return Object.fromEntries(runtimeOptions)[value] || "Web browser";
 }
 
+function profileLabel(value) {
+  return Object.fromEntries(industryProfiles)[value] || "General";
+}
+
 function folderLabel(folderId) {
   if (!folderId) return "Unfiled";
   const folder = state.folders.find((item) => item.id === Number(folderId));
@@ -173,13 +232,11 @@ function playerUrl(screen) {
 function setAuthState(session) {
   state.auth = { ...state.auth, ...session };
   document.body.classList.toggle("authenticated", !!state.auth.authenticated);
-  $("#auth-username").value = state.auth.username || "admin";
+  $("#auth-username").value = state.auth.authenticated ? (state.auth.username || "") : "";
   $("#auth-otp-row").style.display = state.auth.mfa_enabled ? "grid" : "none";
   $("#session-user").textContent = state.auth.username || "admin";
   $("#mfa-state").textContent = state.auth.mfa_enabled ? "MFA on" : "MFA off";
-  $("#bootstrap-note").innerHTML = state.auth.bootstrap_path
-    ? `Default login is <strong>admin</strong> / <strong>admin@123</strong>. Bootstrap file: <code>${escapeHtml(state.auth.bootstrap_path)}</code>`
-    : "Default login is <strong>admin</strong> / <strong>admin@123</strong> until you change it.";
+  $("#bootstrap-note").textContent = "Sign in with your administrator account.";
 }
 
 async function checkSession() {
@@ -210,10 +267,14 @@ async function refresh() {
   state.screens = next.screens || [];
   state.logs = next.logs || [];
   state.reports = next.reports || {};
+  state.settings = next.settings || { selected_profiles: [], profiles_configured: false };
   for (const id of [...selectedScreens]) {
     if (!state.screens.some((screen) => screen.id === id)) selectedScreens.delete(id);
   }
   render();
+  if (state.auth.authenticated && !state.settings.profiles_configured) {
+    openProfileSetup();
+  }
 }
 
 function screenMeta(screen) {
@@ -224,9 +285,11 @@ function screenMeta(screen) {
     screen.vendor_name ? `Vendor: ${escapeHtml(screen.vendor_name)}` : null,
     screen.model ? `Model: ${escapeHtml(screen.model)}` : null,
     `Runtime: ${escapeHtml(screenRuntimeLabel(screen.runtime || "browser"))}`,
+    screen.profile ? `Profile: ${escapeHtml(profileLabel(screen.profile))}` : null,
     `Orientation: ${escapeHtml(screen.orientation)}`,
     screen.ip_address ? `IP: ${escapeHtml(screen.ip_address)}` : "IP: Not saved",
     screen.mac_address ? `MAC: ${escapeHtml(screen.mac_address)}` : null,
+    screen.connected_instances ? `Connected players: ${Number(screen.connected_instances)}` : "Connected players: 0",
     `Playlist: ${escapeHtml(screenPlaylistName(screen))}`,
   ].filter(Boolean);
   if (screen.notes) parts.push(`Notes: ${escapeHtml(screen.notes)}`);
@@ -241,7 +304,7 @@ function networkBadgeClass(screen) {
 
 function overviewScreenCard(screen) {
   return `
-    <article class="card">
+    <article class="card ${screen.online ? "card-live" : ""}">
       <div class="card-body">
         <div class="badge-row">
           <span class="badge ${screen.online ? "online" : "offline"}">${escapeHtml(screen.player_status_label)}</span>
@@ -262,7 +325,7 @@ function overviewScreenCard(screen) {
 
 function fleetScreenCard(screen) {
   return `
-    <article class="card">
+    <article class="card ${screen.online ? "card-live" : ""}">
       <div class="card-body">
         <label class="screen-select">
           <input type="checkbox" ${selectedScreens.has(screen.id) ? "checked" : ""} onchange="toggleScreenSelection(${screen.id}, this.checked)">
@@ -289,13 +352,17 @@ function fleetScreenCard(screen) {
 
 function mediaCard(media) {
   const mediaUrl = media.source_url || `/media/${media.filename}`;
+  const textPreview = media.metadata?.body || media.metadata?.text || "";
   const preview = media.kind === "video"
     ? `<video src="${escapeHtml(mediaUrl)}" muted></video>`
     : media.kind === "image"
       ? `<img src="${escapeHtml(mediaUrl)}" alt="">`
+      : media.kind === "countdown"
+        ? `<div class="media-type-tile text-preview-tile"><small>${escapeHtml(media.metadata?.badge || "Countdown")}</small><strong>${escapeHtml(media.metadata?.message || media.name)}</strong><span>${escapeHtml(media.metadata?.target_at || "")}</span></div>`
       : media.kind === "text"
-        ? `<div class="media-type-tile text-preview-tile"><strong>${escapeHtml(media.name)}</strong><span>${escapeHtml((media.metadata?.text || "").slice(0, 90))}</span></div>`
-      : `<div class="media-type-tile"><strong>${escapeHtml(mediaTypeLabel(media.kind))}</strong><span>${media.source_url ? "URL source" : "Uploaded asset"}</span></div>`;
+        ? `<div class="media-type-tile text-preview-tile"><small>${escapeHtml(media.metadata?.badge || "Text signage")}</small><strong>${escapeHtml(media.metadata?.text || media.name)}</strong><span>${escapeHtml(textPreview.slice(0, 110))}</span></div>`
+        : `<div class="media-type-tile"><strong>${escapeHtml(mediaTypeLabel(media.kind))}</strong><span>${media.source_url ? "URL source" : "Uploaded asset"}</span></div>`;
+  const editable = ["text", "countdown"].includes(media.kind);
 
   return `
     <article class="card">
@@ -305,6 +372,7 @@ function mediaCard(media) {
         <h3>${escapeHtml(media.name)}</h3>
         <p>${escapeHtml(mediaTypeLabel(media.kind))} - ${media.size ? bytes(media.size) : "Remote source"}</p>
         <div class="card-actions">
+          ${editable ? `<button class="secondary" data-action="edit-media" data-media-id="${media.id}"><i class="fa-solid fa-pen"></i><span>Edit</span></button>` : ""}
           <button class="secondary" data-action="move-media" data-media-id="${media.id}"><i class="fa-solid fa-folder-open"></i><span>Move</span></button>
           <button class="secondary danger" data-action="delete-media" data-media-id="${media.id}"><i class="fa-solid fa-trash"></i><span>Delete</span></button>
         </div>
@@ -383,11 +451,30 @@ function activityRow(entry) {
   `;
 }
 
+function highlightCard(title, body, note) {
+  return `
+    <article class="highlight-card">
+      <strong>${escapeHtml(title)}</strong>
+      <p>${escapeHtml(body)}</p>
+      <span>${escapeHtml(note)}</span>
+    </article>
+  `;
+}
+
+function helpCard(title, body, note) {
+  return highlightCard(title, body, note);
+}
+
 function render() {
   $("#screen-count").textContent = state.screens.length;
   $("#online-count").textContent = `${state.screens.filter((screen) => screen.online).length} online now`;
   $("#media-count").textContent = state.media.length;
   $("#playlist-count").textContent = state.playlists.length;
+  const liveInstances = state.reports?.pairing?.live_instances || 0;
+  const activeCodes = state.reports?.pairing?.active_codes || 0;
+  const selectedProfiles = state.settings.selected_profiles || [];
+  $("#live-instance-count").textContent = String(liveInstances);
+  $("#active-code-count").textContent = `${activeCodes} active codes`;
   const filteredMedia = state.activeFolderId === "all"
     ? state.media
     : state.media.filter((media) => String(media.folder_id || 0) === String(state.activeFolderId));
@@ -395,7 +482,29 @@ function render() {
     reportCard("Assigned screens", state.reports?.playback?.assigned_screens || 0, "Currently receiving a playlist", "tower-broadcast"),
     reportCard("Reachable devices", state.reports?.devices?.reachable || 0, "Responding on the network", "wifi"),
     reportCard("Text assets", state.reports?.content?.text_assets || 0, "Text signage ready to publish", "font"),
+    reportCard("Live viewers", liveInstances, "Browsers or player apps currently using pairing codes", "display"),
     reportCard("Failed logins", state.reports?.security?.failed_logins || 0, "Recent blocked or invalid attempts", "triangle-exclamation"),
+  ];
+  const highlights = [
+    highlightCard("Ready to publish", `${state.playlists.length} playlist${state.playlists.length === 1 ? "" : "s"} available`, state.playlists.length ? "Open Playlists to update transitions, timing, countdown behavior, and layouts." : "Add media first, then build the first playlist."),
+    highlightCard("Fleet health", `${state.screens.filter((screen) => screen.online).length} player${state.screens.filter((screen) => screen.online).length === 1 ? "" : "s"} connected live`, state.screens.length ? `Active pairing codes: ${activeCodes}. Shared codes in use: ${state.reports?.pairing?.shared_codes || 0}.` : "No screens added yet. Start from the Screens tab."),
+    highlightCard("Content mix", `${state.media.length} asset${state.media.length === 1 ? "" : "s"} in the library`, `${state.folders.length} folder${state.folders.length === 1 ? "" : "s"}, ${state.reports?.content?.text_assets || 0} text ads, and ${state.reports?.content?.countdowns || 0} countdown item${(state.reports?.content?.countdowns || 0) === 1 ? "" : "s"} ready.`),
+    highlightCard("Deployment mode", state.reports?.network?.lan_ready ? "LAN and Wi-Fi playback ready" : "Network setup needed", "Local media, playlists, and pairing work without internet. Remote URLs such as YouTube and dashboards still need internet access."),
+    highlightCard("Industry profiles", selectedProfiles.length ? selectedProfiles.map(profileLabel).join(", ") : "No profile chosen yet", "Use deployment profiles to tune signage for retail, hospital, office, events, and other environments."),
+    highlightCard("Pairing visibility", `${liveInstances} live player session${liveInstances === 1 ? "" : "s"}`, "OpenMarquee now tracks how many browser or player instances are actively using each pairing code."),
+  ];
+  const helpCards = [
+    helpCard("1. How do I add a screen?", "Open Screens, then choose Add screen for manual entry or Discover to find visible devices on your local network. Save the screen, then use the pairing code on the player screen or player app.", "Best production flow: run the player on Android TV, Raspberry Pi, or a kiosk browser and keep that device paired."),
+    helpCard("2. How does content reach the LCD?", "The LCD itself does not receive files directly by IP. A paired player device opens OpenMarquee, checks the assigned playlist, and automatically streams or loads the content for that screen.", "This is why the player status matters more than simple network ping. A screen can answer ping and still be disconnected from playback."),
+    helpCard("3. How do I publish media?", "Upload images, videos, PDFs, audio, or add URLs from the Media Library. Then create a playlist, set durations, choose transitions, and publish that playlist to one screen, selected screens, or all screens.", "Use split layouts only when you intentionally want multiple items visible at the same time. Full screen stays the default."),
+    helpCard("4. How do text ads work?", "Choose Add text in the Media Library, select a preset, then customize headline, supporting copy, animation, font style, colors, alignment, and folder. Saved text ads can also be edited later from the library.", "Text slides are ideal for promotions, meeting notices, Arabic and Urdu welcome screens, safety alerts, and branded campaigns."),
+    helpCard("4b. How do countdowns work?", "Use Add countdown to set a future date and time. The player will show a live countdown and automatically continue to the next playlist item after the timer completes.", "Countdowns work well for store openings, prayer room notices, launches, meetings, and event starts."),
+    helpCard("5. What happens if there is no media?", "OpenMarquee now shows an animated branded idle scene instead of a blank or static empty screen. This keeps the display polished while waiting for content assignment.", "Once a playlist is assigned, the player swaps automatically on the next sync."),
+    helpCard("6. Why might a YouTube video not play?", "Some YouTube owners disable embedding. OpenMarquee converts supported links into autoplay embed URLs, but if the owner blocks embedding the player will skip or fail instead of bypassing that restriction.", "For guaranteed playback, upload the MP4 directly or use a video source you control."),
+    helpCard("7. How do I stop playback?", "Go to Screens and press Stop on one screen, selected screens, or all screens. The player will return to the branded idle scene after the next refresh.", "Use Activity to confirm the stop action was logged."),
+    helpCard("8. How does offline or LAN mode work?", "If the server, player, and screens are on the same LAN or Wi-Fi, local uploads, text ads, countdowns, playlists, and pairing continue to work without internet. Internet is only required for remote web URLs such as YouTube, dashboards, or cloud pages.", "For strong offline performance, prefer uploaded images, video, PDF, audio, and text assets over external URLs."),
+    helpCard("9. How do deployment profiles work?", "At first sign-in you can choose one or more deployment profiles such as retail, hospital, office, hotel, or events. Each screen can then be assigned one profile to match its content style and operating context.", "This makes it easier to organize different LCD fleets under one server without mixing use cases."),
+    helpCard("10. How do I keep the system secure?", "Use a strong admin password, enable MFA, deploy behind HTTPS and Nginx, and keep the player devices managed. Only authenticated admins can change playlists, screens, and security settings.", "Reports and Activity help you track failed logins, pairing changes, content actions, and operator behavior."),
   ];
 
   $("#overview-screens").innerHTML = state.screens.map(overviewScreenCard).join("") || '<p class="empty">No screens paired yet.</p>';
@@ -403,8 +512,10 @@ function render() {
   $("#media-grid").innerHTML = filteredMedia.map(mediaCard).join("") || '<p class="empty">Your library is ready for its first asset or live source.</p>';
   $("#playlist-grid").innerHTML = state.playlists.map(playlistCard).join("") || '<p class="empty">Create a playlist after uploading media or adding a source.</p>';
   $("#overview-reports").innerHTML = reportCards.join("");
+  $("#overview-highlights").innerHTML = highlights.join("");
+  $("#help-grid").innerHTML = helpCards.join("");
   $("#report-grid").innerHTML = reportCards.join("");
-  $("#overview-logs").innerHTML = state.logs.slice(0, 6).map(activityRow).join("") || '<p class="empty">No activity yet.</p>';
+  $("#activity-log-list").innerHTML = state.logs.map(activityRow).join("") || '<p class="empty">No activity yet.</p>';
   $("#log-list").innerHTML = state.logs.map(activityRow).join("") || '<p class="empty">No activity yet.</p>';
   renderFolders();
   renderSelectionState();
@@ -418,16 +529,33 @@ function go(view) {
     library: "Your content library",
     playlists: "Playlist programming",
     screens: "Your screen fleet",
+    activity: "Recent activity and audit trail",
+    help: "FAQ and full usage guide",
     reports: "Operations and security reports",
   }[view];
 }
 
-async function showModal(html, onSubmit) {
+function modalCancelButton(label = "Cancel") {
+  return `<button class="secondary" data-modal-close type="button">${escapeHtml(label)}</button>`;
+}
+
+async function showModal(html, onSubmit, onOpen = null) {
   const dialog = $("#modal");
+  const form = dialog.querySelector("form");
+  const topClose = dialog.querySelector(".modal-close");
+  if (topClose) topClose.style.display = "";
+  const cleanup = () => {
+    $("#modal-body").innerHTML = "";
+    window.playlistDraft = [];
+  };
   $("#modal-body").innerHTML = html;
+  dialog.onclose = cleanup;
+  dialog.querySelectorAll("[data-modal-close]").forEach((button) => {
+    button.onclick = () => dialog.close("cancel");
+  });
   dialog.showModal();
-  dialog.querySelector("form").onsubmit = async (event) => {
-    if (event.submitter?.value === "cancel") return;
+  if (typeof onOpen === "function") onOpen(dialog);
+  form.onsubmit = async (event) => {
     event.preventDefault();
     try {
       await onSubmit(new FormData(event.target));
@@ -449,6 +577,10 @@ function optionMarkup(options, selectedValue) {
 function folderSelectOptions(selectedValue = 0, includeAll = false) {
   const base = includeAll ? '<option value="0">Unfiled</option>' : '<option value="0">No folder</option>';
   return `${base}${state.folders.map((folder) => `<option value="${folder.id}" ${Number(selectedValue) === Number(folder.id) ? "selected" : ""}>${escapeHtml(folder.name)}</option>`).join("")}`;
+}
+
+function profileSelectOptions(selectedValue = "") {
+  return `<option value="">General</option>${industryProfiles.map(([value, label]) => `<option value="${value}" ${value === selectedValue ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}`;
 }
 
 function transitionPickerMarkup(selectedModes = ["fade"]) {
@@ -486,11 +618,12 @@ function screenForm(screen = null) {
         <select name="runtime">${optionMarkup(runtimeOptions, screen?.runtime || "browser")}</select>
       </div>
     </div>
+    <div class="field"><label>Industry profile</label><select name="profile">${profileSelectOptions(screen?.profile || "")}</select></div>
     <div class="field"><label>IP address</label><input name="ip_address" placeholder="192.168.1.20" value="${escapeHtml(screen?.ip_address || "")}"></div>
     <p class="helper-text">IP reachability and player connection are separate. The best production setup is a managed player app or kiosk runtime on the screen device.</p>
     <div class="field"><label>Orientation</label><select name="orientation"><option value="landscape" ${screen?.orientation !== "portrait" ? "selected" : ""}>Landscape</option><option value="portrait" ${screen?.orientation === "portrait" ? "selected" : ""}>Portrait</option></select></div>
     <div class="field"><label>Notes</label><input name="notes" placeholder="Lobby Samsung panel" value="${escapeHtml(screen?.notes || "")}"></div>
-    <div class="modal-footer"><button class="secondary" value="cancel">Cancel</button><button class="primary">${isEdit ? "Save changes" : "Create screen"}</button></div>
+    <div class="modal-footer">${modalCancelButton()}<button class="primary">${isEdit ? "Save changes" : "Create screen"}</button></div>
   `;
 }
 
@@ -508,7 +641,7 @@ function buildPlaylistRows(selectedItems) {
             <span>Seconds</span>
             <input type="number" min="2" name="duration_${itemIndex}" value="${Number(item.duration || 10)}">
           </label>
-          <button class="secondary danger" type="button" onclick="removePlaylistRow(${itemIndex})">Remove</button>
+          <button class="secondary danger" type="button" data-remove-playlist-row="${itemIndex}">Remove</button>
         </div>
         <input type="hidden" name="media_id_${itemIndex}" value="${Number(item.media_id)}">
       </div>
@@ -570,7 +703,7 @@ function playlistEditorMarkup(playlist, selectedItems) {
         `).join("")}
       </div>
     </div>
-    <div class="modal-footer"><button class="secondary" value="cancel">Cancel</button><button class="primary">Save playlist</button></div>
+    <div class="modal-footer">${modalCancelButton()}<button class="primary">Save playlist</button></div>
   `;
 }
 
@@ -604,12 +737,15 @@ function bindPlaylistEditor(selectedItems) {
   const rebuild = () => {
     const list = $("#playlist-item-list");
     if (list) list.innerHTML = buildPlaylistRows(window.playlistDraft);
-  };
-  window.removePlaylistRow = (rowIndex) => {
-    const removed = window.playlistDraft.splice(rowIndex, 1)[0];
-    const checkbox = $(`input[name="media_pick"][value="${removed.media_id}"]`);
-    if (checkbox) checkbox.checked = false;
-    rebuild();
+    $$("[data-remove-playlist-row]").forEach((button) => {
+      button.onclick = () => {
+        const rowIndex = Number(button.dataset.removePlaylistRow);
+        const removed = window.playlistDraft.splice(rowIndex, 1)[0];
+        const checkbox = $(`input[name="media_pick"][value="${removed.media_id}"]`);
+        if (checkbox) checkbox.checked = false;
+        rebuild();
+      };
+    });
   };
   $$(".pick input[name='media_pick']").forEach((checkbox) => {
     checkbox.onchange = () => {
@@ -620,6 +756,7 @@ function bindPlaylistEditor(selectedItems) {
       rebuild();
     };
   });
+  rebuild();
   const applyButton = $("#apply-all-button");
   const applyInput = $("#apply-all-duration");
   if (applyButton && applyInput) {
@@ -675,7 +812,7 @@ function openPlaylistBuilder() {
     </div>
     <div class="field"><label>Choose content</label><div class="picker picker-wide">${state.media.map((media) => `<label class="pick"><input type="checkbox" name="media" value="${media.id}"><span>${escapeHtml(media.name)}</span></label>`).join("")}</div></div>
     <div class="field"><label>Default duration (seconds)</label><input name="duration" type="number" min="2" value="10"></div>
-    <div class="modal-footer"><button class="secondary" value="cancel">Cancel</button><button class="primary">Create playlist</button></div>
+    <div class="modal-footer">${modalCancelButton()}<button class="primary">Create playlist</button></div>
   `, async (formData) => {
     const ids = formData.getAll("media");
     if (!ids.length) throw new Error("Select at least one item");
@@ -713,8 +850,12 @@ function openSourceBuilder() {
     </select></div>
     <div class="field"><label>Folder</label><select name="folder_id">${folderSelectOptions(state.activeFolderId === "all" ? 0 : Number(state.activeFolderId || 0), true)}</select></div>
     <div class="field"><label>URL</label><input name="source_url" placeholder="https://..." required></div>
+    <div class="playlist-config-grid">
+      <div class="field"><label>Page count for PDF or PowerPoint</label><input name="page_count" type="number" min="1" value="1"></div>
+      <div class="field"><label>Seconds per page</label><input name="slide_interval" type="number" min="2" value="10"></div>
+    </div>
     <p class="helper-text">Use direct or embeddable links for dashboards, widgets, live channels, presentations, and web content.</p>
-    <div class="modal-footer"><button class="secondary" value="cancel">Cancel</button><button class="primary">Add source</button></div>
+    <div class="modal-footer">${modalCancelButton()}<button class="primary">Add source</button></div>
   `, async (formData) => {
     await api("/api/library/url", { method: "POST", body: formData });
     toast("Source added");
@@ -727,7 +868,7 @@ function openFolderBuilder() {
     <p class="eyebrow">MEDIA ORGANIZATION</p>
     <h2>Create folder</h2>
     <div class="field"><label>Folder name</label><input name="name" placeholder="Retail campaign" required></div>
-    <div class="modal-footer"><button class="secondary" value="cancel">Cancel</button><button class="primary">Create folder</button></div>
+    <div class="modal-footer">${modalCancelButton()}<button class="primary">Create folder</button></div>
   `, async (formData) => {
     await api("/api/folders", { method: "POST", body: formData });
     toast("Folder created");
@@ -735,41 +876,122 @@ function openFolderBuilder() {
   });
 }
 
-function openTextBuilder() {
-  showModal(`
+function richTextFormMarkup(existing = null) {
+  const media = existing || { metadata: {} };
+  return `
     <p class="eyebrow">TEXT SIGNAGE</p>
-    <h2>Create text slide</h2>
-    <div class="field"><label>Slide name</label><input name="name" placeholder="Weekend offer" required></div>
-    <div class="field"><label>Text content</label><input name="text" placeholder="Grand opening this Friday" required></div>
-    <div class="playlist-config-grid">
-      <div class="field"><label>Folder</label><select name="folder_id">${folderSelectOptions(state.activeFolderId === "all" ? 0 : Number(state.activeFolderId || 0), true)}</select></div>
-      <div class="field"><label>Animation</label><select name="animation">
-        <option value="fade">Fade</option>
-        <option value="slide-up">Slide up</option>
-        <option value="slide-left">Slide left</option>
-        <option value="zoom">Zoom</option>
-        <option value="ticker">Ticker</option>
-        <option value="pulse">Pulse</option>
-        <option value="none">None</option>
-      </select></div>
-      <div class="field"><label>Theme</label><select name="theme">
-        <option value="midnight">Midnight</option>
-        <option value="emerald">Emerald</option>
-        <option value="sunset">Sunset</option>
-        <option value="royal">Royal</option>
-        <option value="mono">Mono</option>
-      </select></div>
+    <h2>${existing ? "Edit animated text campaign" : "Create animated text campaign"}</h2>
+    <div class="text-preset-grid">
+      <button class="preset-card" data-text-preset="retail" type="button"><strong>Retail</strong><span>Bold offer signage</span></button>
+      <button class="preset-card" data-text-preset="corporate" type="button"><strong>Corporate</strong><span>Elegant announcements</span></button>
+      <button class="preset-card" data-text-preset="event" type="button"><strong>Event</strong><span>Stage and countdown screens</span></button>
+      <button class="preset-card" data-text-preset="urgent" type="button"><strong>Alert</strong><span>High-visibility notices</span></button>
     </div>
     <div class="playlist-config-grid">
-      <div class="field"><label>Background</label><input name="background" value="#13261f"></div>
-      <div class="field"><label>Text color</label><input name="foreground" value="#ffffff"></div>
-      <div class="field"><label>Alignment</label><select name="align"><option value="center">Center</option><option value="left">Left</option><option value="right">Right</option></select></div>
+      <div class="field"><label>Slide name</label><input name="name" placeholder="Weekend offer" value="${escapeHtml(media.name || "")}"></div>
+      <div class="field"><label>Badge</label><input name="badge" placeholder="Limited offer" value="${escapeHtml(media.metadata?.badge || "")}"></div>
+      <div class="field"><label>Folder</label><select name="folder_id">${folderSelectOptions(existing ? Number(media.folder_id || 0) : (state.activeFolderId === "all" ? 0 : Number(state.activeFolderId || 0)), true)}</select></div>
     </div>
-    <div class="modal-footer"><button class="secondary" value="cancel">Cancel</button><button class="primary">Create text slide</button></div>
-  `, async (formData) => {
-    await api("/api/library/text", { method: "POST", body: formData });
-    toast("Text slide created");
+    <div class="field"><label>Main headline</label><input name="text" placeholder="Grand opening this Friday" value="${escapeHtml(media.metadata?.text || "")}" required></div>
+    <div class="field"><label>Supporting text</label><textarea name="body" rows="4" placeholder="Add the longer message, price details, event timing, or campaign copy.">${escapeHtml(media.metadata?.body || "")}</textarea></div>
+    <div class="playlist-config-grid">
+      <div class="field"><label>Animation</label><select name="animation">${optionMarkup(textAnimationOptions, media.metadata?.animation || "glow")}</select></div>
+      <div class="field"><label>Theme</label><select name="theme">${optionMarkup(textThemeOptions, media.metadata?.theme || "sunrise")}</select></div>
+      <div class="field"><label>Font style</label><select name="font_family">${optionMarkup(textFontOptions, media.metadata?.font_family || "display")}</select></div>
+    </div>
+    <div class="playlist-config-grid">
+      <div class="field"><label>Background</label><input name="background" type="color" value="${escapeHtml(media.metadata?.background || "#13261f")}"></div>
+      <div class="field"><label>Text color</label><input name="foreground" type="color" value="${escapeHtml(media.metadata?.foreground || "#ffffff")}"></div>
+      <div class="field"><label>Accent color</label><input name="accent" type="color" value="${escapeHtml(media.metadata?.accent || "#ffe082")}"></div>
+    </div>
+    <div class="playlist-config-grid">
+      <div class="field"><label>Alignment</label><select name="align"><option value="center" ${(media.metadata?.align || "center") === "center" ? "selected" : ""}>Center</option><option value="left" ${(media.metadata?.align || "") === "left" ? "selected" : ""}>Left</option><option value="right" ${(media.metadata?.align || "") === "right" ? "selected" : ""}>Right</option></select></div>
+      <div class="field"><label>Headline size</label><input name="font_scale" type="number" min="70" max="160" value="${Number(media.metadata?.font_scale || 110)}"></div>
+      <div class="field"><label>Case style</label><select name="text_case"><option value="none" ${(media.metadata?.text_case || "none") === "none" ? "selected" : ""}>Normal</option><option value="uppercase" ${(media.metadata?.text_case || "") === "uppercase" ? "selected" : ""}>Uppercase</option><option value="title" ${(media.metadata?.text_case || "") === "title" ? "selected" : ""}>Title case</option></select></div>
+    </div>
+    <p class="helper-text">Use a preset for a fast start, then tune animation, font style, colors, and alignment for the screen. Arabic and Urdu messages are supported through dedicated font styles.</p>
+    <div class="modal-footer">${modalCancelButton()}<button class="primary">${existing ? "Save text slide" : "Create text slide"}</button></div>
+  `;
+}
+
+function bindTextPresets() {
+  $$("[data-text-preset]").forEach((button) => {
+    button.onclick = () => {
+      const preset = textPresets[button.dataset.textPreset];
+      if (!preset) return;
+      Object.entries(preset).forEach(([key, value]) => {
+        const field = document.querySelector(`#modal [name="${key}"]`);
+        if (field) field.value = value;
+      });
+    };
+  });
+}
+
+function openTextBuilder(existing = null) {
+  showModal(richTextFormMarkup(existing), async (formData) => {
+    await api(existing ? `/api/media/${existing.id}/rich` : "/api/library/text", { method: existing ? "PUT" : "POST", body: formData });
+    toast(existing ? "Text slide updated" : "Text slide created");
     await refresh();
+  }, bindTextPresets);
+}
+
+function openCountdownBuilder(existing = null) {
+  const media = existing || { metadata: {} };
+  showModal(`
+    <p class="eyebrow">LIVE COUNTDOWN</p>
+    <h2>${existing ? "Edit countdown" : "Create countdown"}</h2>
+    <div class="playlist-config-grid">
+      <div class="field"><label>Countdown name</label><input name="name" placeholder="Store opening" value="${escapeHtml(media.name || "")}" required></div>
+      <div class="field"><label>Badge</label><input name="badge" placeholder="Live countdown" value="${escapeHtml(media.metadata?.badge || "Live countdown")}"></div>
+      <div class="field"><label>Folder</label><select name="folder_id">${folderSelectOptions(existing ? Number(media.folder_id || 0) : (state.activeFolderId === "all" ? 0 : Number(state.activeFolderId || 0)), true)}</select></div>
+    </div>
+    <div class="playlist-config-grid">
+      <div class="field"><label>Target date and time</label><input name="target_at" type="datetime-local" value="${escapeHtml(media.metadata?.target_at || "")}" required></div>
+      <div class="field"><label>Theme</label><select name="theme">${optionMarkup(textThemeOptions, media.metadata?.theme || "royal")}</select></div>
+      <div class="field"><label>Style</label><select name="style"><option value="flip" ${(media.metadata?.style || "flip") === "flip" ? "selected" : ""}>Flip clock</option><option value="hero" ${(media.metadata?.style || "") === "hero" ? "selected" : ""}>Hero digits</option><option value="capsule" ${(media.metadata?.style || "") === "capsule" ? "selected" : ""}>Capsule board</option></select></div>
+    </div>
+    <div class="field"><label>Before start message</label><input name="message" placeholder="The event is about to begin" value="${escapeHtml(media.metadata?.message || "")}"></div>
+    <div class="field"><label>After finish message</label><input name="complete_message" placeholder="Starting now" value="${escapeHtml(media.metadata?.complete_message || "")}"></div>
+    <div class="playlist-config-grid">
+      <div class="field"><label>Background</label><input name="background" type="color" value="${escapeHtml(media.metadata?.background || "#13261f")}"></div>
+      <div class="field"><label>Text color</label><input name="foreground" type="color" value="${escapeHtml(media.metadata?.foreground || "#ffffff")}"></div>
+      <div class="field"><label>Accent color</label><input name="accent" type="color" value="${escapeHtml(media.metadata?.accent || "#7bd6ff")}"></div>
+    </div>
+    <p class="helper-text">When the countdown reaches zero, OpenMarquee automatically advances to the next playlist item.</p>
+    <div class="modal-footer">${modalCancelButton()}<button class="primary">${existing ? "Save countdown" : "Create countdown"}</button></div>
+  `, async (formData) => {
+    await api(existing ? `/api/media/${existing.id}/rich` : "/api/library/countdown", { method: existing ? "PUT" : "POST", body: formData });
+    toast(existing ? "Countdown updated" : "Countdown created");
+    await refresh();
+  });
+}
+
+function openProfileSetup() {
+  if (document.querySelector("#modal[open]")) return;
+  const selected = new Set(state.settings.selected_profiles || []);
+  showModal(`
+    <p class="eyebrow">DEPLOYMENT SETUP</p>
+    <h2>Choose your signage environment</h2>
+    <p class="helper-text">Select one or more industry profiles. You can change these later and assign different profiles to different screens.</p>
+    <div class="profile-pick-grid">
+      ${industryProfiles.map(([value, label]) => `
+        <label class="profile-pick">
+          <input type="checkbox" name="profile_pick" value="${value}" ${selected.has(value) ? "checked" : ""}>
+          <span><strong>${escapeHtml(label)}</strong><span>${escapeHtml(`Templates and defaults for ${label.toLowerCase()} signage`)}</span></span>
+        </label>
+      `).join("")}
+    </div>
+    <div class="modal-footer"><button class="primary">Save profiles</button></div>
+  `, async (formData) => {
+    const profiles = formData.getAll("profile_pick").map(String);
+    const payload = new FormData();
+    payload.set("profiles", JSON.stringify(profiles));
+    await api("/api/settings/profiles", { method: "POST", body: payload });
+    toast("Deployment profiles saved");
+    await refresh();
+  }, () => {
+    const closeButton = document.querySelector("#modal [data-modal-close]");
+    if (closeButton) closeButton.style.display = "none";
   });
 }
 
@@ -832,7 +1054,7 @@ window.assignOne = async (screenId) => {
     <p class="eyebrow">PUBLISH</p>
     <h2>Assign playlist</h2>
     <div class="field"><label>Playlist</label><select name="playlist_id">${playlistOptions()}</select></div>
-    <div class="modal-footer"><button class="secondary" value="cancel">Cancel</button><button class="primary">Publish</button></div>
+    <div class="modal-footer">${modalCancelButton()}<button class="primary">Publish</button></div>
   `, async (formData) => {
     await api(`/api/screens/${screenId}/assign`, { method: "POST", body: formData });
     toast("Playlist published");
@@ -872,7 +1094,7 @@ function openBulkAssign(allScreens = false) {
     <h2>Assign playlist to ${targetScreens.length} screen${targetScreens.length === 1 ? "" : "s"}</h2>
     <div class="stack-note">${targetScreens.map((screen) => escapeHtml(screen.name)).join(" - ")}</div>
     <div class="field"><label>Playlist</label><select name="playlist_id">${playlistOptions()}</select></div>
-    <div class="modal-footer"><button class="secondary" value="cancel">Cancel</button><button class="primary">Publish</button></div>
+    <div class="modal-footer">${modalCancelButton()}<button class="primary">Publish</button></div>
   `, async (formData) => {
     await api("/api/screens/assign-many", {
       method: "POST",
@@ -891,7 +1113,7 @@ function openBulkStop(allScreens = false) {
     <p class="eyebrow">STOP PLAYBACK</p>
     <h2>Stop ${targetScreens.length} screen${targetScreens.length === 1 ? "" : "s"}</h2>
     <div class="stack-note">${targetScreens.map((screen) => escapeHtml(screen.name)).join(" - ")}</div>
-    <div class="modal-footer"><button class="secondary" value="cancel">Cancel</button><button class="primary">Stop now</button></div>
+    <div class="modal-footer">${modalCancelButton()}<button class="primary">Stop now</button></div>
   `, async () => {
     await api("/api/screens/stop-many", {
       method: "POST",
@@ -924,7 +1146,7 @@ async function openDiscovery() {
           </label>
         `).join("") : '<p class="empty">No visible devices were found. You can still add screens manually by name or IP.</p>'}
       </div>
-      <div class="modal-footer"><button class="secondary" value="cancel">Close</button><button class="primary">Add selected</button></div>
+      <div class="modal-footer">${modalCancelButton("Close")}<button class="primary">Add selected</button></div>
     `, async (formData) => {
       const selections = formData.getAll("device").map((value) => String(value).split("|"));
       const available = selections.filter(([ip]) => !state.screens.some((screen) => screen.ip_address === ip));
@@ -953,7 +1175,7 @@ async function openPasswordModal() {
     <h2>Change admin password</h2>
     <div class="field"><label>Current password</label><input name="current_password" type="password" required></div>
     <div class="field"><label>New password</label><input name="new_password" type="password" minlength="8" required></div>
-    <div class="modal-footer"><button class="secondary" value="cancel">Cancel</button><button class="primary">Save password</button></div>
+    <div class="modal-footer">${modalCancelButton()}<button class="primary">Save password</button></div>
   `, async (formData) => {
     await api("/api/auth/password", { method: "POST", body: formData });
     toast("Password updated");
@@ -970,7 +1192,7 @@ async function openMfaModal() {
       <div class="field"><label>Admin password</label><input name="password" type="password" required></div>
       <div class="field"><label>Current MFA code</label><input name="otp" inputmode="numeric" maxlength="6" required></div>
       <p class="helper-text">MFA codes rotate every 10 seconds.</p>
-      <div class="modal-footer"><button class="secondary" value="cancel">Cancel</button><button class="primary">Disable MFA</button></div>
+      <div class="modal-footer">${modalCancelButton()}<button class="primary">Disable MFA</button></div>
     `, async (formData) => {
       await api("/api/auth/mfa/disable", { method: "POST", body: formData });
       toast("MFA disabled");
@@ -987,7 +1209,7 @@ async function openMfaModal() {
     <div class="field"><label>OTP URI</label><input value="${escapeHtml(setup.uri)}" readonly></div>
     <div class="field"><label>First MFA code</label><input name="otp" inputmode="numeric" maxlength="6" required></div>
     <p class="helper-text">Add the secret to Google Authenticator, Microsoft Authenticator, 1Password, or another TOTP app. Codes rotate every ${setup.period_seconds} seconds.</p>
-    <div class="modal-footer"><button class="secondary" value="cancel">Cancel</button><button class="primary">Enable MFA</button></div>
+    <div class="modal-footer">${modalCancelButton()}<button class="primary">Enable MFA</button></div>
   `, async (formData) => {
     await api("/api/auth/mfa/enable", { method: "POST", body: formData });
     toast("MFA enabled");
@@ -1007,6 +1229,13 @@ window.removeMedia = async (mediaId) => {
   await refresh();
 };
 
+window.editMedia = async (mediaId) => {
+  const media = state.media.find((item) => item.id === mediaId);
+  if (!media) return;
+  if (media.kind === "text") return openTextBuilder(media);
+  if (media.kind === "countdown") return openCountdownBuilder(media);
+};
+
 window.moveMedia = async (mediaId) => {
   const media = state.media.find((item) => item.id === mediaId);
   if (!media) return;
@@ -1014,7 +1243,7 @@ window.moveMedia = async (mediaId) => {
     <p class="eyebrow">MEDIA ORGANIZATION</p>
     <h2>Move media</h2>
     <div class="field"><label>Folder</label><select name="folder_id">${folderSelectOptions(media.folder_id || 0, true)}</select></div>
-    <div class="modal-footer"><button class="secondary" value="cancel">Cancel</button><button class="primary">Save folder</button></div>
+    <div class="modal-footer">${modalCancelButton()}<button class="primary">Save folder</button></div>
   `, async (formData) => {
     await api(`/api/media/${mediaId}/folder`, { method: "PUT", body: formData });
     toast("Media moved");
@@ -1043,6 +1272,7 @@ document.addEventListener("click", async (event) => {
     if (button.dataset.action === "regen-code" && screenId) await window.regeneratePairingCode(screenId);
     if (button.dataset.action === "edit-screen" && screenId) await window.editScreen(screenId);
     if (button.dataset.action === "delete-screen" && screenId) await window.deleteScreen(screenId);
+    if (button.dataset.action === "edit-media" && mediaId) await window.editMedia(mediaId);
     if (button.dataset.action === "delete-media" && mediaId) await window.removeMedia(mediaId);
     if (button.dataset.action === "move-media" && mediaId) await window.moveMedia(mediaId);
     if (button.dataset.action === "edit-playlist" && playlistId) await window.editPlaylist(playlistId);
@@ -1067,7 +1297,7 @@ $("#auth-form").onsubmit = async (event) => {
 
 $("#logout-button").onclick = async () => {
   await api("/api/auth/logout", { method: "POST" });
-  setAuthState({ authenticated: false, username: state.auth.username, mfa_enabled: state.auth.mfa_enabled, bootstrap_path: state.auth.bootstrap_path });
+  setAuthState({ authenticated: false, username: "", mfa_enabled: state.auth.mfa_enabled });
   toast("Signed out");
 };
 
@@ -1095,6 +1325,7 @@ $("#new-playlist").onclick = openPlaylistBuilder;
 $("#new-source").onclick = openSourceBuilder;
 $("#new-folder").onclick = openFolderBuilder;
 $("#new-text").onclick = openTextBuilder;
+$("#new-countdown").onclick = () => openCountdownBuilder();
 $("#discover-screens").onclick = openDiscovery;
 $("#assign-selected").onclick = () => openBulkAssign(false);
 $("#assign-all").onclick = () => openBulkAssign(true);
@@ -1106,5 +1337,7 @@ $("#select-all").onchange = (event) => {
   render();
 };
 
-checkSession().catch((error) => toast(error.message));
+checkSession().catch((error) => toast(error.message)).finally(() => {
+  document.body.classList.remove("app-loading");
+});
 setInterval(() => refresh().catch(() => {}), 30000);
