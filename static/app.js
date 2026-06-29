@@ -1,4 +1,13 @@
-const state = { media: [], playlists: [], screens: [], auth: { authenticated: false, username: "admin", mfa_enabled: false, bootstrap_path: null } };
+const state = {
+  media: [],
+  folders: [],
+  playlists: [],
+  screens: [],
+  logs: [],
+  reports: {},
+  activeFolderId: "all",
+  auth: { authenticated: false, username: "admin", mfa_enabled: false, bootstrap_path: null },
+};
 const selectedScreens = new Set();
 
 const transitionOptions = [
@@ -132,6 +141,17 @@ function screenRuntimeLabel(value) {
   return Object.fromEntries(runtimeOptions)[value] || "Web browser";
 }
 
+function folderLabel(folderId) {
+  if (!folderId) return "Unfiled";
+  const folder = state.folders.find((item) => item.id === Number(folderId));
+  return folder ? folder.name : "Folder";
+}
+
+function formatLogTime(value) {
+  if (!value) return "";
+  return new Date(Number(value) * 1000).toLocaleString();
+}
+
 function mediaById(mediaId) {
   return state.media.find((item) => item.id === Number(mediaId));
 }
@@ -172,6 +192,7 @@ async function refresh() {
   if (!state.auth.authenticated) return;
   const next = await api("/api/dashboard");
   state.media = next.media || [];
+  state.folders = next.folders || [];
   state.playlists = (next.playlists || []).map((playlist) => ({
     ...playlist,
     layout_mode: playlist.layout_mode || "full",
@@ -187,6 +208,8 @@ async function refresh() {
         })(),
   }));
   state.screens = next.screens || [];
+  state.logs = next.logs || [];
+  state.reports = next.reports || {};
   for (const id of [...selectedScreens]) {
     if (!state.screens.some((screen) => screen.id === id)) selectedScreens.delete(id);
   }
@@ -196,6 +219,7 @@ async function refresh() {
 function screenMeta(screen) {
   const parts = [
     `Pairing code: <strong>${screen.code}</strong>`,
+    screen.pairing_expires_in ? `Pairing expires in: ${Math.ceil(screen.pairing_expires_in / 60)} min` : null,
     `Brand: ${escapeHtml(screenBrandLabel(screen.brand || "unknown"))}`,
     screen.vendor_name ? `Vendor: ${escapeHtml(screen.vendor_name)}` : null,
     screen.model ? `Model: ${escapeHtml(screen.model)}` : null,
@@ -228,6 +252,7 @@ function overviewScreenCard(screen) {
         <div class="card-actions">
           <button class="secondary" data-action="assign-screen" data-screen-id="${screen.id}"><i class="fa-solid fa-photo-film"></i><span>Assign</span></button>
           <button class="secondary" data-action="stop-screen" data-screen-id="${screen.id}"><i class="fa-solid fa-stop"></i><span>Stop</span></button>
+          <button class="secondary" data-action="regen-code" data-screen-id="${screen.id}"><i class="fa-solid fa-rotate"></i><span>Code</span></button>
           <button class="secondary" data-action="copy-player-link" data-screen-id="${screen.id}"><i class="fa-solid fa-link"></i><span>Player link</span></button>
         </div>
       </div>
@@ -252,6 +277,7 @@ function fleetScreenCard(screen) {
         <div class="card-actions">
           <button class="secondary" data-action="assign-screen" data-screen-id="${screen.id}"><i class="fa-solid fa-play"></i><span>Publish</span></button>
           <button class="secondary" data-action="stop-screen" data-screen-id="${screen.id}"><i class="fa-solid fa-stop"></i><span>Stop</span></button>
+          <button class="secondary" data-action="regen-code" data-screen-id="${screen.id}"><i class="fa-solid fa-rotate"></i><span>Code</span></button>
           <button class="secondary" data-action="copy-player-link" data-screen-id="${screen.id}"><i class="fa-solid fa-link"></i><span>Link</span></button>
           <button class="secondary" data-action="edit-screen" data-screen-id="${screen.id}"><i class="fa-solid fa-pen"></i><span>Edit</span></button>
           <button class="secondary danger" data-action="delete-screen" data-screen-id="${screen.id}"><i class="fa-solid fa-trash"></i><span>Delete</span></button>
@@ -267,15 +293,21 @@ function mediaCard(media) {
     ? `<video src="${escapeHtml(mediaUrl)}" muted></video>`
     : media.kind === "image"
       ? `<img src="${escapeHtml(mediaUrl)}" alt="">`
+      : media.kind === "text"
+        ? `<div class="media-type-tile text-preview-tile"><strong>${escapeHtml(media.name)}</strong><span>${escapeHtml((media.metadata?.text || "").slice(0, 90))}</span></div>`
       : `<div class="media-type-tile"><strong>${escapeHtml(mediaTypeLabel(media.kind))}</strong><span>${media.source_url ? "URL source" : "Uploaded asset"}</span></div>`;
 
   return `
     <article class="card">
       <div class="media-preview">${preview}</div>
       <div class="card-body">
+        <div class="badge-row"><span class="badge"><i class="fa-solid fa-folder"></i><span>${escapeHtml(folderLabel(media.folder_id))}</span></span></div>
         <h3>${escapeHtml(media.name)}</h3>
         <p>${escapeHtml(mediaTypeLabel(media.kind))} - ${media.size ? bytes(media.size) : "Remote source"}</p>
-        <button class="secondary danger" data-action="delete-media" data-media-id="${media.id}"><i class="fa-solid fa-trash"></i><span>Delete</span></button>
+        <div class="card-actions">
+          <button class="secondary" data-action="move-media" data-media-id="${media.id}"><i class="fa-solid fa-folder-open"></i><span>Move</span></button>
+          <button class="secondary danger" data-action="delete-media" data-media-id="${media.id}"><i class="fa-solid fa-trash"></i><span>Delete</span></button>
+        </div>
       </div>
     </article>
   `;
@@ -306,16 +338,75 @@ function renderSelectionState() {
   $("#select-all").checked = !!state.screens.length && count === state.screens.length;
 }
 
+function renderFolders() {
+  const folderCounts = new Map();
+  for (const media of state.media) {
+    const key = String(media.folder_id || 0);
+    folderCounts.set(key, (folderCounts.get(key) || 0) + 1);
+  }
+  const items = [
+    { id: "all", name: "All media", count: state.media.length, icon: "fa-layer-group" },
+    { id: "0", name: "Unfiled", count: folderCounts.get("0") || 0, icon: "fa-inbox" },
+    ...state.folders.map((folder) => ({ id: String(folder.id), name: folder.name, count: folderCounts.get(String(folder.id)) || 0, icon: "fa-folder" })),
+  ];
+  $("#folder-bar").innerHTML = items.map((item) => `
+    <button class="folder-chip ${String(state.activeFolderId) === String(item.id) ? "active" : ""}" data-folder-filter="${item.id}">
+      <i class="fa-solid ${item.icon}"></i>
+      <span>${escapeHtml(item.name)}</span>
+      <strong>${item.count}</strong>
+    </button>
+  `).join("");
+}
+
+function reportCard(title, value, note, icon) {
+  return `
+    <article>
+      <span><i class="fa-solid ${icon}"></i> ${escapeHtml(title)}</span>
+      <strong>${escapeHtml(String(value))}</strong>
+      <small>${escapeHtml(note)}</small>
+    </article>
+  `;
+}
+
+function activityRow(entry) {
+  return `
+    <article class="log-row">
+      <div>
+        <strong>${escapeHtml(entry.action.replaceAll("_", " "))}</strong>
+        <p>${escapeHtml(entry.target_type)}${entry.target_name ? ` - ${escapeHtml(entry.target_name)}` : ""}</p>
+      </div>
+      <div class="log-meta">
+        <span>${escapeHtml(entry.actor)}</span>
+        <small>${escapeHtml(formatLogTime(entry.created_at))}</small>
+      </div>
+    </article>
+  `;
+}
+
 function render() {
   $("#screen-count").textContent = state.screens.length;
   $("#online-count").textContent = `${state.screens.filter((screen) => screen.online).length} online now`;
   $("#media-count").textContent = state.media.length;
   $("#playlist-count").textContent = state.playlists.length;
+  const filteredMedia = state.activeFolderId === "all"
+    ? state.media
+    : state.media.filter((media) => String(media.folder_id || 0) === String(state.activeFolderId));
+  const reportCards = [
+    reportCard("Assigned screens", state.reports?.playback?.assigned_screens || 0, "Currently receiving a playlist", "tower-broadcast"),
+    reportCard("Reachable devices", state.reports?.devices?.reachable || 0, "Responding on the network", "wifi"),
+    reportCard("Text assets", state.reports?.content?.text_assets || 0, "Text signage ready to publish", "font"),
+    reportCard("Failed logins", state.reports?.security?.failed_logins || 0, "Recent blocked or invalid attempts", "triangle-exclamation"),
+  ];
 
   $("#overview-screens").innerHTML = state.screens.map(overviewScreenCard).join("") || '<p class="empty">No screens paired yet.</p>';
   $("#screen-grid").innerHTML = state.screens.map(fleetScreenCard).join("") || '<p class="empty">No screens added yet. Start with manual entry or network discovery.</p>';
-  $("#media-grid").innerHTML = state.media.map(mediaCard).join("") || '<p class="empty">Your library is ready for its first asset or live source.</p>';
+  $("#media-grid").innerHTML = filteredMedia.map(mediaCard).join("") || '<p class="empty">Your library is ready for its first asset or live source.</p>';
   $("#playlist-grid").innerHTML = state.playlists.map(playlistCard).join("") || '<p class="empty">Create a playlist after uploading media or adding a source.</p>';
+  $("#overview-reports").innerHTML = reportCards.join("");
+  $("#report-grid").innerHTML = reportCards.join("");
+  $("#overview-logs").innerHTML = state.logs.slice(0, 6).map(activityRow).join("") || '<p class="empty">No activity yet.</p>';
+  $("#log-list").innerHTML = state.logs.map(activityRow).join("") || '<p class="empty">No activity yet.</p>';
+  renderFolders();
   renderSelectionState();
 }
 
@@ -327,6 +418,7 @@ function go(view) {
     library: "Your content library",
     playlists: "Playlist programming",
     screens: "Your screen fleet",
+    reports: "Operations and security reports",
   }[view];
 }
 
@@ -352,6 +444,11 @@ function playlistOptions(selected = "") {
 
 function optionMarkup(options, selectedValue) {
   return options.map(([value, label]) => `<option value="${value}" ${value === selectedValue ? "selected" : ""}>${escapeHtml(label)}</option>`).join("");
+}
+
+function folderSelectOptions(selectedValue = 0, includeAll = false) {
+  const base = includeAll ? '<option value="0">Unfiled</option>' : '<option value="0">No folder</option>';
+  return `${base}${state.folders.map((folder) => `<option value="${folder.id}" ${Number(selectedValue) === Number(folder.id) ? "selected" : ""}>${escapeHtml(folder.name)}</option>`).join("")}`;
 }
 
 function transitionPickerMarkup(selectedModes = ["fade"]) {
@@ -614,12 +711,64 @@ function openSourceBuilder() {
       <option value="audio">Audio URL</option>
       <option value="html">Hosted HTML</option>
     </select></div>
+    <div class="field"><label>Folder</label><select name="folder_id">${folderSelectOptions(state.activeFolderId === "all" ? 0 : Number(state.activeFolderId || 0), true)}</select></div>
     <div class="field"><label>URL</label><input name="source_url" placeholder="https://..." required></div>
     <p class="helper-text">Use direct or embeddable links for dashboards, widgets, live channels, presentations, and web content.</p>
     <div class="modal-footer"><button class="secondary" value="cancel">Cancel</button><button class="primary">Add source</button></div>
   `, async (formData) => {
     await api("/api/library/url", { method: "POST", body: formData });
     toast("Source added");
+    await refresh();
+  });
+}
+
+function openFolderBuilder() {
+  showModal(`
+    <p class="eyebrow">MEDIA ORGANIZATION</p>
+    <h2>Create folder</h2>
+    <div class="field"><label>Folder name</label><input name="name" placeholder="Retail campaign" required></div>
+    <div class="modal-footer"><button class="secondary" value="cancel">Cancel</button><button class="primary">Create folder</button></div>
+  `, async (formData) => {
+    await api("/api/folders", { method: "POST", body: formData });
+    toast("Folder created");
+    await refresh();
+  });
+}
+
+function openTextBuilder() {
+  showModal(`
+    <p class="eyebrow">TEXT SIGNAGE</p>
+    <h2>Create text slide</h2>
+    <div class="field"><label>Slide name</label><input name="name" placeholder="Weekend offer" required></div>
+    <div class="field"><label>Text content</label><input name="text" placeholder="Grand opening this Friday" required></div>
+    <div class="playlist-config-grid">
+      <div class="field"><label>Folder</label><select name="folder_id">${folderSelectOptions(state.activeFolderId === "all" ? 0 : Number(state.activeFolderId || 0), true)}</select></div>
+      <div class="field"><label>Animation</label><select name="animation">
+        <option value="fade">Fade</option>
+        <option value="slide-up">Slide up</option>
+        <option value="slide-left">Slide left</option>
+        <option value="zoom">Zoom</option>
+        <option value="ticker">Ticker</option>
+        <option value="pulse">Pulse</option>
+        <option value="none">None</option>
+      </select></div>
+      <div class="field"><label>Theme</label><select name="theme">
+        <option value="midnight">Midnight</option>
+        <option value="emerald">Emerald</option>
+        <option value="sunset">Sunset</option>
+        <option value="royal">Royal</option>
+        <option value="mono">Mono</option>
+      </select></div>
+    </div>
+    <div class="playlist-config-grid">
+      <div class="field"><label>Background</label><input name="background" value="#13261f"></div>
+      <div class="field"><label>Text color</label><input name="foreground" value="#ffffff"></div>
+      <div class="field"><label>Alignment</label><select name="align"><option value="center">Center</option><option value="left">Left</option><option value="right">Right</option></select></div>
+    </div>
+    <div class="modal-footer"><button class="secondary" value="cancel">Cancel</button><button class="primary">Create text slide</button></div>
+  `, async (formData) => {
+    await api("/api/library/text", { method: "POST", body: formData });
+    toast("Text slide created");
     await refresh();
   });
 }
@@ -702,6 +851,12 @@ window.copyPlayerLink = async (screenId) => {
   if (!screen) return;
   await navigator.clipboard.writeText(playerUrl(screen));
   toast("Player link copied");
+};
+
+window.regeneratePairingCode = async (screenId) => {
+  const result = await api(`/api/screens/${screenId}/regenerate-code`, { method: "POST" });
+  toast(`New pairing code ${result.code}`);
+  await refresh();
 };
 
 function openBulkAssign(allScreens = false) {
@@ -852,9 +1007,30 @@ window.removeMedia = async (mediaId) => {
   await refresh();
 };
 
+window.moveMedia = async (mediaId) => {
+  const media = state.media.find((item) => item.id === mediaId);
+  if (!media) return;
+  showModal(`
+    <p class="eyebrow">MEDIA ORGANIZATION</p>
+    <h2>Move media</h2>
+    <div class="field"><label>Folder</label><select name="folder_id">${folderSelectOptions(media.folder_id || 0, true)}</select></div>
+    <div class="modal-footer"><button class="secondary" value="cancel">Cancel</button><button class="primary">Save folder</button></div>
+  `, async (formData) => {
+    await api(`/api/media/${mediaId}/folder`, { method: "PUT", body: formData });
+    toast("Media moved");
+    await refresh();
+  });
+};
+
 $$(".nav").forEach((item) => { item.onclick = () => go(item.dataset.view); });
 $$("[data-go]").forEach((item) => { item.onclick = () => go(item.dataset.go); });
 document.addEventListener("click", async (event) => {
+  const folderFilter = event.target.closest("[data-folder-filter]");
+  if (folderFilter) {
+    state.activeFolderId = folderFilter.dataset.folderFilter;
+    render();
+    return;
+  }
   const button = event.target.closest("[data-action]");
   if (!button) return;
   const screenId = Number(button.dataset.screenId || 0);
@@ -864,9 +1040,11 @@ document.addEventListener("click", async (event) => {
     if (button.dataset.action === "assign-screen" && screenId) await window.assignOne(screenId);
     if (button.dataset.action === "stop-screen" && screenId) await window.stopOne(screenId);
     if (button.dataset.action === "copy-player-link" && screenId) await window.copyPlayerLink(screenId);
+    if (button.dataset.action === "regen-code" && screenId) await window.regeneratePairingCode(screenId);
     if (button.dataset.action === "edit-screen" && screenId) await window.editScreen(screenId);
     if (button.dataset.action === "delete-screen" && screenId) await window.deleteScreen(screenId);
     if (button.dataset.action === "delete-media" && mediaId) await window.removeMedia(mediaId);
+    if (button.dataset.action === "move-media" && mediaId) await window.moveMedia(mediaId);
     if (button.dataset.action === "edit-playlist" && playlistId) await window.editPlaylist(playlistId);
     if (button.dataset.action === "delete-playlist" && playlistId) await window.deletePlaylist(playlistId);
   } catch (error) {
@@ -899,6 +1077,7 @@ $("#mfa-button").onclick = () => openMfaModal();
 $("#file-input").onchange = async (event) => {
   for (const file of event.target.files) {
     const formData = new FormData();
+    if (state.activeFolderId !== "all") formData.append("folder_id", String(Number(state.activeFolderId) || 0));
     formData.append("file", file);
     try {
       await api("/api/media", { method: "POST", body: formData });
@@ -914,6 +1093,8 @@ $("#file-input").onchange = async (event) => {
 $("#new-screen").onclick = openCreateScreen;
 $("#new-playlist").onclick = openPlaylistBuilder;
 $("#new-source").onclick = openSourceBuilder;
+$("#new-folder").onclick = openFolderBuilder;
+$("#new-text").onclick = openTextBuilder;
 $("#discover-screens").onclick = openDiscovery;
 $("#assign-selected").onclick = () => openBulkAssign(false);
 $("#assign-all").onclick = () => openBulkAssign(true);

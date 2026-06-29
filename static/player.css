@@ -92,7 +92,14 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#09110d;col
 .panel-iframe-media{border:0;background:#fff}
 .panel-youtube-media{background:#000}
 .panel-audio,.panel-rss,.panel-iframe,.panel-youtube{background:linear-gradient(135deg,#0f1b16 0%,#09110d 100%)}
+.panel-text{display:grid;place-items:center;padding:42px}
 .youtube-note{position:absolute;left:18px;right:18px;bottom:18px;z-index:3;padding:10px 12px;border-radius:10px;background:rgba(6,10,9,.72);color:#dbe6df;font-size:12px;line-height:1.45;backdrop-filter:blur(8px)}
+.text-stage{position:relative;z-index:2;width:min(1100px,100%);display:grid;place-items:center;text-align:center}
+.text-stage.text-align-left{text-align:left;justify-items:start}
+.text-stage.text-align-right{text-align:right;justify-items:end}
+.text-copy{display:grid;gap:18px}
+.text-copy strong{font-size:24px;opacity:.88}
+.text-copy p{margin:0;font-size:clamp(32px,5vw,78px);line-height:1.08;font-weight:800}
 .audio-mini,.rss-mini{position:relative;z-index:2;height:100%;display:grid;align-content:center;justify-items:center;text-align:center;padding:28px}
 .audio-mini strong,.rss-mini strong{font-size:28px}
 .audio-mini span,.rss-mini span{color:#a8bbb1}
@@ -112,6 +119,12 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#09110d;col
 .panel-image.pan-right .panel-image-media{animation:panRight 18s ease-in-out forwards}
 .panel-image.float-rise .panel-image-media{animation:floatRise 18s ease-in-out forwards}
 .panel-image.cinema-sweep .panel-image-media{animation:cinemaSweep 18s ease-in-out forwards}
+.panel-text.text-animation-fade .text-copy{animation:textFade 12s ease both}
+.panel-text.text-animation-slide-up .text-copy{animation:textSlideUp 12s ease both}
+.panel-text.text-animation-slide-left .text-copy{animation:textSlideLeft 12s ease both}
+.panel-text.text-animation-zoom .text-copy{animation:textZoom 12s ease both}
+.panel-text.text-animation-ticker .text-copy{animation:textTicker 14s linear both}
+.panel-text.text-animation-pulse .text-copy{animation:textPulse 6s ease-in-out infinite}
 
 @keyframes kenburnsIn{0%{transform:scale(1.02) translate3d(0,0,0)}50%{transform:scale(1.08) translate3d(-1.2%,1%,0)}100%{transform:scale(1.13) translate3d(1.2%,-1%,0)}}
 @keyframes kenburnsOut{0%{transform:scale(1.15) translate3d(1%,-1%,0)}100%{transform:scale(1.03) translate3d(-1%,1.2%,0)}}
@@ -120,3 +133,9 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#09110d;col
 @keyframes floatRise{0%{transform:scale(1.08) translate3d(0,2.4%,0)}40%{transform:scale(1.12) translate3d(-1%,0,0)}100%{transform:scale(1.17) translate3d(1.4%,-3%,0)}}
 @keyframes cinemaSweep{0%{transform:scale(1.14) translate3d(-2.2%,-1.4%,0) rotate(.15deg)}45%{transform:scale(1.09) translate3d(1.1%,.5%,0) rotate(0)}100%{transform:scale(1.14) translate3d(2.2%,1.4%,0) rotate(-.15deg)}}
 @keyframes audioBounce{0%,100%{transform:scaleY(.72)}50%{transform:scaleY(1.18)}}
+@keyframes textFade{0%,100%{opacity:0;transform:translateY(18px)}10%,90%{opacity:1;transform:none}}
+@keyframes textSlideUp{0%{opacity:0;transform:translateY(48px)}14%,86%{opacity:1;transform:none}100%{opacity:0;transform:translateY(-48px)}}
+@keyframes textSlideLeft{0%{opacity:0;transform:translateX(70px)}14%,86%{opacity:1;transform:none}100%{opacity:0;transform:translateX(-70px)}}
+@keyframes textZoom{0%{opacity:0;transform:scale(.82)}18%,88%{opacity:1;transform:scale(1)}100%{opacity:0;transform:scale(1.08)}}
+@keyframes textTicker{0%{transform:translateX(16%)}100%{transform:translateX(-16%)}}
+@keyframes textPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.04)}}

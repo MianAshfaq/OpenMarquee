@@ -7,17 +7,21 @@ smart TVs, Android players, Raspberry Pi devices, and web browsers.
 
 - Upload images and videos
 - Add YouTube, dashboards, RSS, IPTV, HTML, audio, PDF, and web URLs
+- Create styled text-signage slides with backgrounds and animations
 - Build ordered playlists with per-item durations
 - Rotate one or many transition effects across each playlist
 - Full-screen and split-screen playback modes
-- Pair screens using a six-character code
+- Pair screens using a six-character code with 10-minute expiry before first successful pairing
 - Add screens manually with brand, model, runtime, IP address, and notes
 - Discover visible devices on the local network and add them to the fleet
+- Organize media into folders and move assets between folders
 - Edit screens, delete screens, stop playback, and assign playlists to one, many, or all screens
 - Full-screen web player with smoother transitions and hidden control chrome
 - Screen heartbeat and online/offline monitoring
 - Admin authentication with password change and optional 10-second MFA TOTP codes
 - Security headers and protected admin APIs
+- Health endpoint, audit logs, and overview reports
+- Docker, `.env` example, and Nginx reverse proxy sample config
 - SQLite storage with no external cloud dependency
 
 ## Run on Windows
@@ -49,6 +53,13 @@ Managed player notes and Raspberry Pi autostart setup live in:
 - `players/README.md`
 - `players/raspberry-pi/install-kiosk.sh`
 - `players/android-tv/README.md`
+
+Production deployment guidance lives in:
+
+- `PRODUCTION.md`
+- `deploy/nginx/openmarquee.conf`
+- `docker-compose.yml`
+- `.env.example`
 
 ## Roadmap
 

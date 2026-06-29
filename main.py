@@ -59,6 +59,7 @@ URL_MEDIA_KINDS = {
     "audio",
     "html",
 }
+DIRECT_MEDIA_KINDS = {"image", "video", "pdf", "audio", "html", "text"}
 SCREEN_BRANDS = {
     "unknown",
     "samsung",
@@ -148,13 +149,20 @@ def init_db() -> None:
     with db() as conn:
         conn.executescript(
             """
+            CREATE TABLE IF NOT EXISTS media_folders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                created_at INTEGER NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS media (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 filename TEXT NOT NULL UNIQUE,
                 kind TEXT NOT NULL,
                 size INTEGER NOT NULL,
+                folder_id INTEGER,
                 source_url TEXT,
+                metadata TEXT NOT NULL DEFAULT '{}',
                 created_at INTEGER NOT NULL
             );
             CREATE TABLE IF NOT EXISTS playlists (
@@ -180,12 +188,23 @@ def init_db() -> None:
                 mac_address TEXT,
                 vendor_name TEXT,
                 notes TEXT,
+                paired_at INTEGER,
+                code_expires_at INTEGER,
                 last_seen INTEGER,
                 created_at INTEGER NOT NULL
             );
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS activity_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor TEXT NOT NULL,
+                action TEXT NOT NULL,
+                target_type TEXT NOT NULL,
+                target_name TEXT,
+                details TEXT NOT NULL DEFAULT '{}',
+                created_at INTEGER NOT NULL
             );
             """
         )
@@ -204,9 +223,17 @@ def init_db() -> None:
             conn.execute("ALTER TABLE screens ADD COLUMN mac_address TEXT")
         if "vendor_name" not in columns:
             conn.execute("ALTER TABLE screens ADD COLUMN vendor_name TEXT")
+        if "paired_at" not in columns:
+            conn.execute("ALTER TABLE screens ADD COLUMN paired_at INTEGER")
+        if "code_expires_at" not in columns:
+            conn.execute("ALTER TABLE screens ADD COLUMN code_expires_at INTEGER")
         media_columns = {row["name"] for row in conn.execute("PRAGMA table_info(media)").fetchall()}
         if "source_url" not in media_columns:
             conn.execute("ALTER TABLE media ADD COLUMN source_url TEXT")
+        if "folder_id" not in media_columns:
+            conn.execute("ALTER TABLE media ADD COLUMN folder_id INTEGER")
+        if "metadata" not in media_columns:
+            conn.execute("""ALTER TABLE media ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'""")
         playlist_columns = {row["name"] for row in conn.execute("PRAGMA table_info(playlists)").fetchall()}
         if "layout_mode" not in playlist_columns:
             conn.execute("ALTER TABLE playlists ADD COLUMN layout_mode TEXT NOT NULL DEFAULT 'full'")
@@ -266,6 +293,16 @@ def write_setting(key: str, value: str) -> None:
         )
 
 
+def log_event(actor: str, action: str, target_type: str, target_name: str | None = None, details: dict | None = None) -> None:
+    payload = details or {}
+    logger.info("%s %s %s %s", actor, action, target_type, target_name or "")
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO activity_logs(actor, action, target_type, target_name, details, created_at) VALUES(?,?,?,?,?,?)",
+            (actor, action, target_type, target_name, json.dumps(payload), int(time.time())),
+        )
+
+
 def issue_session_token(username: str) -> str:
     expires_at = int(time.time()) + SESSION_TTL_SECONDS
     payload = f"{username}|{expires_at}"
@@ -298,7 +335,7 @@ def set_session_cookie(response: Response, username: str) -> None:
         issue_session_token(username),
         httponly=True,
         samesite="lax",
-        secure=False,
+        secure=COOKIE_SECURE,
         max_age=SESSION_TTL_SECONDS,
     )
 
@@ -312,6 +349,43 @@ def require_admin(request: Request) -> str:
     if not username:
         raise HTTPException(401, "Please sign in")
     return username
+
+
+def normalize_text_animation(value: str) -> str:
+    cleaned = (value or "fade").strip().lower()
+    if cleaned not in TEXT_ANIMATIONS:
+        raise HTTPException(400, "Invalid text animation")
+    return cleaned
+
+
+def normalize_text_theme(value: str) -> str:
+    cleaned = (value or "midnight").strip().lower()
+    if cleaned not in TEXT_THEMES:
+        raise HTTPException(400, "Invalid text theme")
+    return cleaned
+
+
+def make_pairing_code() -> str:
+    return secrets.token_hex(3).upper()
+
+
+def next_code_expiry() -> int:
+    return int(time.time()) + PAIRING_TTL_SECONDS
+
+
+def ensure_pairing_code(screen: dict) -> dict:
+    now = int(time.time())
+    if screen.get("paired_at"):
+        return screen
+    expires_at = int(screen.get("code_expires_at") or 0)
+    if expires_at > now:
+        return screen
+    screen["code"] = make_pairing_code()
+    screen["code_expires_at"] = next_code_expiry()
+    with db() as conn:
+        conn.execute("UPDATE screens SET code=?, code_expires_at=? WHERE id=?", (screen["code"], screen["code_expires_at"], screen["id"]))
+    log_event("system", "regenerate", "pairing_code", screen.get("name"), {"screen_id": screen["id"]})
+    return screen
 
 
 def hotp_token(secret: str, counter: int, digits: int = 6) -> str:
@@ -597,6 +671,18 @@ def player() -> FileResponse:
     return FileResponse(STATIC / "player.html")
 
 
+@app.get("/api/health")
+def health() -> dict:
+    return {
+        "ok": True,
+        "app": "OpenMarquee",
+        "version": app.version,
+        "started_at": APP_STARTED_AT,
+        "uptime_seconds": int(time.time()) - APP_STARTED_AT,
+        "database": DB_PATH.exists(),
+    }
+
+
 @app.get("/api/auth/session")
 def auth_session(request: Request) -> dict:
     username = decode_session_token(request.cookies.get(SESSION_COOKIE))
@@ -611,26 +697,32 @@ def auth_session(request: Request) -> dict:
 @app.post("/api/auth/login")
 def auth_login(
     response: Response,
+    request: Request,
     username: str = Form(...),
     password: str = Form(...),
     otp: str = Form(""),
 ) -> dict:
     if username.strip() != ADMIN_USERNAME:
+        log_event("anonymous", "failed_login", "auth", username.strip() or "unknown", {"ip": request.client.host if request.client else None})
         raise HTTPException(401, "Invalid username or password")
     stored_password = read_setting("admin_password_hash")
     if not stored_password or not verify_password(password, stored_password):
+        log_event(ADMIN_USERNAME, "failed_login", "auth", ADMIN_USERNAME, {"ip": request.client.host if request.client else None})
         raise HTTPException(401, "Invalid username or password")
     mfa_enabled = read_setting("mfa_enabled") == "1"
     mfa_secret = read_setting("mfa_secret") or ""
     if mfa_enabled and not verify_totp(mfa_secret, otp):
+        log_event(ADMIN_USERNAME, "failed_mfa", "auth", ADMIN_USERNAME, {"ip": request.client.host if request.client else None})
         raise HTTPException(401, "Invalid MFA code")
     set_session_cookie(response, ADMIN_USERNAME)
+    log_event(ADMIN_USERNAME, "login", "auth", ADMIN_USERNAME, {"ip": request.client.host if request.client else None})
     return {"ok": True, "username": ADMIN_USERNAME, "mfa_enabled": mfa_enabled}
 
 
 @app.post("/api/auth/logout")
 def auth_logout(response: Response, _admin: str = Depends(require_admin)) -> dict:
     clear_session_cookie(response)
+    log_event(_admin, "logout", "auth", _admin)
     return {"ok": True}
 
 
@@ -647,6 +739,7 @@ def auth_password_change(
         raise HTTPException(400, "New password must be at least 8 characters")
     write_setting("admin_password_hash", hash_password(new_password.strip()))
     BOOTSTRAP_PATH.unlink(missing_ok=True)
+    log_event(_admin, "change_password", "auth", _admin)
     return {"ok": True}
 
 
@@ -669,6 +762,7 @@ def auth_mfa_enable(otp: str = Form(...), _admin: str = Depends(require_admin)) 
     write_setting("mfa_secret", secret)
     write_setting("mfa_enabled", "1")
     write_setting("mfa_secret_pending", "")
+    log_event(_admin, "enable_mfa", "auth", _admin)
     return {"ok": True}
 
 
@@ -687,19 +781,27 @@ def auth_mfa_disable(
     write_setting("mfa_enabled", "0")
     write_setting("mfa_secret", "")
     write_setting("mfa_secret_pending", "")
+    log_event(_admin, "disable_mfa", "auth", _admin)
     return {"ok": True}
 
 
 @app.get("/api/dashboard")
 def dashboard(_admin: str = Depends(require_admin)) -> dict:
+    folders = rows("SELECT * FROM media_folders ORDER BY LOWER(name)")
     media = rows("SELECT * FROM media ORDER BY created_at DESC")
     playlists = rows("SELECT * FROM playlists ORDER BY created_at DESC")
     screens = rows("SELECT * FROM screens ORDER BY created_at DESC")
+    recent_logs = rows("SELECT * FROM activity_logs ORDER BY created_at DESC LIMIT 30")
     for playlist in playlists:
         playlist["items"] = json.loads(playlist["items"])
         playlist["transition_modes"] = normalize_transition_modes(playlist.get("transition_modes") or json.dumps([playlist.get("transition_mode") or "fade"]))
+    folder_lookup = {folder["id"]: folder for folder in folders}
     now = int(time.time())
+    for item in media:
+        item["metadata"] = json.loads(item.get("metadata") or "{}")
+        item["folder"] = folder_lookup.get(item.get("folder_id"))
     for screen in screens:
+        screen = ensure_pairing_code(screen)
         screen["online"] = bool(screen["last_seen"] and now - screen["last_seen"] < 90)
         screen["player_status"] = "connected" if screen["online"] else "waiting"
         screen["player_status_label"] = "Player connected" if screen["online"] else "Player not connected"
@@ -717,11 +819,36 @@ def dashboard(_admin: str = Depends(require_admin)) -> dict:
             "invalid_ip": "Invalid IP address",
             "no_ip": "No IP saved",
         }[network_status]
-    return {"media": media, "playlists": playlists, "screens": screens}
+        screen["pairing_expires_in"] = max(0, int(screen.get("code_expires_at") or 0) - now) if not screen.get("paired_at") else None
+    for entry in recent_logs:
+        entry["details"] = json.loads(entry.get("details") or "{}")
+    reports = {
+        "playback": {
+            "assigned_screens": sum(1 for screen in screens if screen.get("playlist_id")),
+            "idle_screens": sum(1 for screen in screens if not screen.get("playlist_id")),
+            "online_screens": sum(1 for screen in screens if screen.get("online")),
+        },
+        "devices": {
+            "total": len(screens),
+            "reachable": sum(1 for screen in screens if screen.get("reachable")),
+            "offline": sum(1 for screen in screens if not screen.get("online")),
+        },
+        "content": {
+            "total_media": len(media),
+            "folders": len(folders),
+            "text_assets": sum(1 for item in media if item.get("kind") == "text"),
+            "remote_sources": sum(1 for item in media if item.get("source_url")),
+        },
+        "security": {
+            "failed_logins": sum(1 for entry in recent_logs if entry["action"] in {"failed_login", "failed_mfa"}),
+            "recent_logins": sum(1 for entry in recent_logs if entry["action"] == "login"),
+        },
+    }
+    return {"media": media, "folders": folders, "playlists": playlists, "screens": screens, "logs": recent_logs, "reports": reports}
 
 
 @app.post("/api/media")
-def upload_media(file: UploadFile = File(...), _admin: str = Depends(require_admin)) -> dict:
+def upload_media(folder_id: int = Form(0), file: UploadFile = File(...), _admin: str = Depends(require_admin)) -> dict:
     content_type = file.content_type or mimetypes.guess_type(file.filename or "")[0] or ""
     if content_type.startswith("image/"):
         kind = "image"
@@ -743,12 +870,14 @@ def upload_media(file: UploadFile = File(...), _admin: str = Depends(require_adm
     if destination.stat().st_size > MAX_UPLOAD_BYTES:
         destination.unlink(missing_ok=True)
         raise HTTPException(400, f"File is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit")
+    chosen_folder_id = folder_id or None
     with db() as conn:
         cursor = conn.execute(
-            "INSERT INTO media(name, filename, kind, size, source_url, created_at) VALUES(?,?,?,?,?,?)",
-            (file.filename or filename, filename, kind, destination.stat().st_size, None, int(time.time())),
+            "INSERT INTO media(name, filename, kind, size, folder_id, source_url, metadata, created_at) VALUES(?,?,?,?,?,?,?,?)",
+            (file.filename or filename, filename, kind, destination.stat().st_size, chosen_folder_id, None, "{}", int(time.time())),
         )
         media_id = cursor.lastrowid
+    log_event(_admin, "upload", "media", file.filename or filename, {"media_id": media_id, "kind": kind})
     return {"id": media_id, "name": file.filename, "filename": filename, "kind": kind}
 
 
@@ -757,6 +886,7 @@ def create_url_media(
     name: str = Form(...),
     kind: str = Form(...),
     source_url: str = Form(...),
+    folder_id: int = Form(0),
     _admin: str = Depends(require_admin),
 ) -> dict:
     cleaned_kind = kind.strip().lower()
@@ -766,22 +896,80 @@ def create_url_media(
     filename = f"url-{secrets.token_hex(8)}"
     with db() as conn:
         cursor = conn.execute(
-            "INSERT INTO media(name, filename, kind, size, source_url, created_at) VALUES(?,?,?,?,?,?)",
-            (name.strip() or cleaned_kind.title(), filename, cleaned_kind, 0, normalized_url, int(time.time())),
+            "INSERT INTO media(name, filename, kind, size, folder_id, source_url, metadata, created_at) VALUES(?,?,?,?,?,?,?,?)",
+            (name.strip() or cleaned_kind.title(), filename, cleaned_kind, 0, folder_id or None, normalized_url, "{}", int(time.time())),
         )
         media_id = cursor.lastrowid
+    log_event(_admin, "create_source", "media", name.strip() or cleaned_kind.title(), {"media_id": media_id, "kind": cleaned_kind})
     return {"id": media_id, "name": name, "filename": filename, "kind": cleaned_kind, "source_url": normalized_url}
+
+
+@app.post("/api/library/text")
+def create_text_media(
+    name: str = Form(...),
+    text: str = Form(...),
+    folder_id: int = Form(0),
+    animation: str = Form("fade"),
+    theme: str = Form("midnight"),
+    background: str = Form("#13261f"),
+    foreground: str = Form("#ffffff"),
+    align: str = Form("center"),
+    _admin: str = Depends(require_admin),
+) -> dict:
+    cleaned_text = text.strip()
+    if not cleaned_text:
+        raise HTTPException(400, "Text content is required")
+    metadata = {
+        "text": cleaned_text,
+        "animation": normalize_text_animation(animation),
+        "theme": normalize_text_theme(theme),
+        "background": background.strip() or "#13261f",
+        "foreground": foreground.strip() or "#ffffff",
+        "align": align.strip().lower() or "center",
+    }
+    filename = f"text-{secrets.token_hex(8)}.json"
+    with db() as conn:
+        cursor = conn.execute(
+            "INSERT INTO media(name, filename, kind, size, folder_id, source_url, metadata, created_at) VALUES(?,?,?,?,?,?,?,?)",
+            (name.strip() or "Text slide", filename, "text", len(cleaned_text.encode("utf-8")), folder_id or None, None, json.dumps(metadata), int(time.time())),
+        )
+        media_id = cursor.lastrowid
+    log_event(_admin, "create_text", "media", name.strip() or "Text slide", {"media_id": media_id})
+    return {"id": media_id, "name": name, "filename": filename, "kind": "text", "metadata": metadata}
+
+
+@app.post("/api/folders")
+def create_folder(name: str = Form(...), _admin: str = Depends(require_admin)) -> dict:
+    cleaned_name = name.strip()
+    if not cleaned_name:
+        raise HTTPException(400, "Folder name is required")
+    with db() as conn:
+        cursor = conn.execute("INSERT INTO media_folders(name, created_at) VALUES(?, ?)", (cleaned_name, int(time.time())))
+        folder_id = cursor.lastrowid
+    log_event(_admin, "create", "folder", cleaned_name, {"folder_id": folder_id})
+    return {"id": folder_id, "name": cleaned_name}
+
+
+@app.put("/api/media/{media_id}/folder")
+def update_media_folder(media_id: int, folder_id: int = Form(0), _admin: str = Depends(require_admin)) -> dict:
+    with db() as conn:
+        cursor = conn.execute("UPDATE media SET folder_id=? WHERE id=?", (folder_id or None, media_id))
+        if cursor.rowcount == 0:
+            raise HTTPException(404, "Media not found")
+    log_event(_admin, "move", "media", f"media:{media_id}", {"folder_id": folder_id or None})
+    return {"ok": True}
 
 
 @app.delete("/api/media/{media_id}")
 def delete_media(media_id: int, _admin: str = Depends(require_admin)) -> dict:
-    result = rows("SELECT filename, source_url FROM media WHERE id=?", (media_id,))
+    result = rows("SELECT filename, source_url, name FROM media WHERE id=?", (media_id,))
     if not result:
         raise HTTPException(404, "Media not found")
     if not result[0]["source_url"]:
         (UPLOADS / result[0]["filename"]).unlink(missing_ok=True)
     with db() as conn:
         conn.execute("DELETE FROM media WHERE id=?", (media_id,))
+    log_event(_admin, "delete", "media", result[0]["name"], {"media_id": media_id})
     return {"ok": True}
 
 
@@ -824,6 +1012,7 @@ def create_playlist(
                 int(time.time()),
             ),
         )
+    log_event(_admin, "create", "playlist", name.strip() or "Untitled playlist", {"playlist_id": cursor.lastrowid, "items": len(cleaned)})
     return {"id": cursor.lastrowid}
 
 
@@ -869,16 +1058,19 @@ def update_playlist(
         )
         if cursor.rowcount == 0:
             raise HTTPException(404, "Playlist not found")
+    log_event(_admin, "update", "playlist", name.strip() or "Untitled playlist", {"playlist_id": playlist_id, "items": len(cleaned)})
     return {"ok": True}
 
 
 @app.delete("/api/playlists/{playlist_id}")
 def delete_playlist(playlist_id: int, _admin: str = Depends(require_admin)) -> dict:
+    playlist_rows = rows("SELECT name FROM playlists WHERE id=?", (playlist_id,))
+    if not playlist_rows:
+        raise HTTPException(404, "Playlist not found")
     with db() as conn:
         conn.execute("UPDATE screens SET playlist_id=NULL WHERE playlist_id=?", (playlist_id,))
         cursor = conn.execute("DELETE FROM playlists WHERE id=?", (playlist_id,))
-        if cursor.rowcount == 0:
-            raise HTTPException(404, "Playlist not found")
+    log_event(_admin, "delete", "playlist", playlist_rows[0]["name"], {"playlist_id": playlist_id})
     return {"ok": True}
 
 
@@ -915,12 +1107,26 @@ def create_screen(
                 int(time.time()),
             ),
         )
+        conn.execute("UPDATE screens SET code_expires_at=? WHERE id=?", (next_code_expiry(), cursor.lastrowid))
+    log_event(_admin, "create", "screen", name.strip() or "New screen", {"screen_id": cursor.lastrowid})
     return {"id": cursor.lastrowid, "code": code}
 
 
 @app.get("/api/network/discover")
 def network_discover(_admin: str = Depends(require_admin)) -> dict:
     return {"devices": discover_network_devices()}
+
+
+@app.post("/api/screens/{screen_id}/regenerate-code")
+def regenerate_pairing_code(screen_id: int, _admin: str = Depends(require_admin)) -> dict:
+    next_code = make_pairing_code()
+    expires_at = next_code_expiry()
+    with db() as conn:
+        cursor = conn.execute("UPDATE screens SET code=?, paired_at=NULL, code_expires_at=? WHERE id=?", (next_code, expires_at, screen_id))
+        if cursor.rowcount == 0:
+            raise HTTPException(404, "Screen not found")
+    log_event(_admin, "regenerate", "pairing_code", f"screen:{screen_id}", {"screen_id": screen_id})
+    return {"ok": True, "code": next_code, "expires_at": expires_at}
 
 
 @app.post("/api/screens/assign-many")
@@ -936,6 +1142,7 @@ def assign_many_screens(payload: dict, _admin: str = Depends(require_admin)) -> 
             "UPDATE screens SET playlist_id=? WHERE id=?",
             [(playlist_id, screen_id) for screen_id in screen_ids],
         )
+    log_event(_admin, "assign_many", "screen", f"{len(screen_ids)} screens", {"playlist_id": playlist_id, "screen_ids": screen_ids})
     return {"ok": True, "updated": len(screen_ids)}
 
 
@@ -943,6 +1150,7 @@ def assign_many_screens(payload: dict, _admin: str = Depends(require_admin)) -> 
 def assign_playlist(screen_id: int, playlist_id: int = Form(...), _admin: str = Depends(require_admin)) -> dict:
     with db() as conn:
         conn.execute("UPDATE screens SET playlist_id=? WHERE id=?", (playlist_id, screen_id))
+    log_event(_admin, "assign", "screen", f"screen:{screen_id}", {"playlist_id": playlist_id})
     return {"ok": True}
 
 
@@ -953,6 +1161,7 @@ def stop_many_screens(payload: dict, _admin: str = Depends(require_admin)) -> di
         raise HTTPException(400, "Select at least one screen")
     with db() as conn:
         conn.executemany("UPDATE screens SET playlist_id=NULL WHERE id=?", [(screen_id,) for screen_id in screen_ids])
+    log_event(_admin, "stop_many", "screen", f"{len(screen_ids)} screens", {"screen_ids": screen_ids})
     return {"ok": True, "updated": len(screen_ids)}
 
 
@@ -960,6 +1169,7 @@ def stop_many_screens(payload: dict, _admin: str = Depends(require_admin)) -> di
 def stop_screen(screen_id: int, _admin: str = Depends(require_admin)) -> dict:
     with db() as conn:
         conn.execute("UPDATE screens SET playlist_id=NULL WHERE id=?", (screen_id,))
+    log_event(_admin, "stop", "screen", f"screen:{screen_id}", {"screen_id": screen_id})
     return {"ok": True}
 
 
@@ -997,15 +1207,18 @@ def update_screen(
         )
         if cursor.rowcount == 0:
             raise HTTPException(404, "Screen not found")
+    log_event(_admin, "update", "screen", name.strip() or "Unnamed screen", {"screen_id": screen_id})
     return {"ok": True}
 
 
 @app.delete("/api/screens/{screen_id}")
 def delete_screen(screen_id: int, _admin: str = Depends(require_admin)) -> dict:
+    screen_rows = rows("SELECT name FROM screens WHERE id=?", (screen_id,))
+    if not screen_rows:
+        raise HTTPException(404, "Screen not found")
     with db() as conn:
         cursor = conn.execute("DELETE FROM screens WHERE id=?", (screen_id,))
-        if cursor.rowcount == 0:
-            raise HTTPException(404, "Screen not found")
+    log_event(_admin, "delete", "screen", screen_rows[0]["name"], {"screen_id": screen_id})
     return {"ok": True}
 
 
@@ -1015,8 +1228,16 @@ def player_manifest(code: str) -> dict:
     if not screens:
         raise HTTPException(404, "Pairing code not found")
     screen = screens[0]
+    now = int(time.time())
+    if not screen.get("paired_at") and int(screen.get("code_expires_at") or 0) < now:
+        screen = ensure_pairing_code(screen)
+        raise HTTPException(410, "Pairing code expired. Refresh the pairing code from the admin panel.")
     with db() as conn:
-        conn.execute("UPDATE screens SET last_seen=? WHERE id=?", (int(time.time()), screen["id"]))
+        if not screen.get("paired_at"):
+            conn.execute("UPDATE screens SET last_seen=?, paired_at=? WHERE id=?", (now, now, screen["id"]))
+            screen["paired_at"] = now
+        else:
+            conn.execute("UPDATE screens SET last_seen=? WHERE id=?", (now, screen["id"]))
     items: list[dict] = []
     playlist_meta = {"layout_mode": "full", "fit_mode": "contain", "transition_mode": "fade", "transition_modes": ["fade"]}
     if screen["playlist_id"]:
@@ -1036,8 +1257,13 @@ def player_manifest(code: str) -> dict:
                 media = media_lookup.get(int(item["media_id"]))
                 if media:
                     resolved_url = media["source_url"] or f"/media/{media['filename']}"
-                    items.append({**media, "duration": max(2, int(item.get("duration", 10))), "url": resolved_url})
-    return {"screen": screen, "items": items, "generated_at": int(time.time()), **playlist_meta}
+                    items.append({
+                        **media,
+                        "metadata": json.loads(media.get("metadata") or "{}"),
+                        "duration": max(2, int(item.get("duration", 10))),
+                        "url": resolved_url,
+                    })
+    return {"screen": screen, "items": items, "generated_at": now, **playlist_meta}
 
 
 @app.get("/api/rss")

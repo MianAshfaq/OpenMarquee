@@ -7,6 +7,13 @@ const fullscreenToggle = document.querySelector("#fullscreen-toggle");
 const imageAnimations = ["kenburns-in", "kenburns-out", "pan-left", "pan-right", "float-rise", "cinema-sweep"];
 const transitionEffects = ["fade", "slide-left", "slide-right", "slide-up", "slide-down", "zoom-in", "zoom-out", "push", "wipe", "dissolve", "flip", "rotate", "cube", "blur", "crossfade", "split", "circle", "curtain"];
 const params = new URLSearchParams(window.location.search);
+const textThemes = {
+  midnight: { background: "linear-gradient(135deg,#09110d 0%,#13261f 100%)", foreground: "#ffffff" },
+  emerald: { background: "linear-gradient(135deg,#0d2f23 0%,#1f6b4f 100%)", foreground: "#efffe8" },
+  sunset: { background: "linear-gradient(135deg,#4a1f1b 0%,#c86d3a 100%)", foreground: "#fff7ef" },
+  royal: { background: "linear-gradient(135deg,#1d2448 0%,#4062c9 100%)", foreground: "#f6f8ff" },
+  mono: { background: "linear-gradient(135deg,#111111 0%,#444444 100%)", foreground: "#fafafa" },
+};
 
 let code = (params.get("code") || localStorage.getItem("openmarquee-code") || "").trim().toUpperCase();
 let manifest = null;
@@ -287,7 +294,26 @@ async function createPanel(item, visualIndex, splitMode) {
   if (item.kind === "video" || item.kind === "stream" || item.kind === "iptv") return createVideoPanel(item);
   if (item.kind === "audio") return createAudioPanel(item);
   if (item.kind === "rss") return createRssPanel(item);
+  if (item.kind === "text") return createTextPanel(item);
   return createIframePanel(item);
+}
+
+function createTextPanel(item) {
+  const metadata = item.metadata || {};
+  const theme = textThemes[metadata.theme] || textThemes.midnight;
+  const panel = document.createElement("div");
+  panel.className = `panel panel-text text-animation-${metadata.animation || "fade"}`;
+  panel.style.background = metadata.background || theme.background;
+  panel.style.color = metadata.foreground || theme.foreground;
+  panel.innerHTML = `
+    <div class="text-stage text-align-${metadata.align || "center"}">
+      <div class="text-copy">
+        <strong>${escapeHtml(item.name || "Text slide")}</strong>
+        <p>${escapeHtml(metadata.text || "")}</p>
+      </div>
+    </div>
+  `;
+  return panel;
 }
 
 async function createFullScene(item, visualIndex) {

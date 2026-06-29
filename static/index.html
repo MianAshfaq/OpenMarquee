@@ -41,6 +41,7 @@
       <button class="nav" data-view="library"><i class="fa-solid fa-photo-film"></i><span>Media library</span></button>
       <button class="nav" data-view="playlists"><i class="fa-solid fa-list-ul"></i><span>Playlists</span></button>
       <button class="nav" data-view="screens"><i class="fa-solid fa-tv"></i><span>Screens</span></button>
+      <button class="nav" data-view="reports"><i class="fa-solid fa-shield-halved"></i><span>Reports</span></button>
     </nav>
     <div class="sidebar-foot">
       <div><span class="pulse"></span> Self-hosted and ready</div>
@@ -89,16 +90,28 @@
         <button class="text-button" data-go="screens">Open fleet manager</button>
       </div>
       <div id="overview-screens" class="screen-grid"></div>
+      <div class="section-title">
+        <div><p class="eyebrow">OPERATIONS</p><h2>Health and reports</h2></div>
+        <button class="text-button" data-go="reports">Open reports</button>
+      </div>
+      <div id="overview-reports" class="stats report-stats"></div>
+      <div class="section-title">
+        <div><p class="eyebrow">AUDIT</p><h2>Recent activity</h2></div>
+      </div>
+      <div id="overview-logs" class="log-list"></div>
     </section>
 
     <section id="library" class="view">
       <div class="section-title">
         <div><p class="eyebrow">CONTENT</p><h2>Media library</h2></div>
         <div class="toolbar">
-          <button class="secondary" id="new-source">Add source</button>
+          <button class="secondary" id="new-folder"><i class="fa-solid fa-folder-plus"></i><span>Add folder</span></button>
+          <button class="secondary" id="new-text"><i class="fa-solid fa-font"></i><span>Add text</span></button>
+          <button class="secondary" id="new-source"><i class="fa-solid fa-link"></i><span>Add source</span></button>
           <label class="primary">Add media<input id="file-input" type="file" accept="image/*,video/*,application/pdf,audio/*,text/html" multiple hidden></label>
         </div>
       </div>
+      <div id="folder-bar" class="folder-bar"></div>
       <div id="media-grid" class="media-grid"></div>
     </section>
 
@@ -127,6 +140,17 @@
         <strong id="selected-count">No screens selected</strong>
       </div>
       <div id="screen-grid" class="list-grid"></div>
+    </section>
+
+    <section id="reports" class="view">
+      <div class="section-title">
+        <div><p class="eyebrow">SECURITY AND OPERATIONS</p><h2>Reports</h2></div>
+      </div>
+      <div id="report-grid" class="stats report-stats"></div>
+      <div class="section-title">
+        <div><p class="eyebrow">AUDIT TRAIL</p><h2>Activity logs</h2></div>
+      </div>
+      <div id="log-list" class="log-list"></div>
     </section>
   </main>
 

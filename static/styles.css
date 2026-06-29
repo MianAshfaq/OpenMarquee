@@ -210,6 +210,28 @@ button,.primary{font:inherit;cursor:pointer}
   gap:16px;
   margin-top:18px;
 }
+.report-stats{margin-top:18px}
+.folder-bar{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 18px}
+.folder-chip{
+  border:1px solid var(--line);
+  background:rgba(255,255,255,.92);
+  border-radius:999px;
+  padding:10px 14px;
+  display:inline-flex;
+  align-items:center;
+  gap:10px;
+}
+.folder-chip strong{
+  min-width:26px;
+  height:26px;
+  display:grid;
+  place-items:center;
+  border-radius:999px;
+  background:#eef3ed;
+  font-size:11px;
+}
+.folder-chip.active{background:var(--green);color:#fff;border-color:transparent}
+.folder-chip.active strong{background:rgba(255,255,255,.18);color:#fff}
 .card{
   background:rgba(255,255,255,.93);
   border:1px solid var(--line);
@@ -236,6 +258,8 @@ button,.primary{font:inherit;cursor:pointer}
 }
 .media-type-tile strong{font-size:18px}
 .media-type-tile span{font-size:12px;color:#b8c5be}
+.text-preview-tile{align-content:center}
+.text-preview-tile span{line-height:1.5}
 .badge{
   display:inline-flex;
   align-items:center;
@@ -392,6 +416,19 @@ dialog form{padding:28px;position:relative}
 }
 .discover-row strong{display:block}
 .discover-row small,.discover-row em{color:var(--muted);font-size:12px}
+.log-list{display:grid;gap:10px;margin-top:18px}
+.log-row{
+  display:flex;
+  justify-content:space-between;
+  gap:16px;
+  align-items:flex-start;
+  padding:14px 16px;
+  background:rgba(255,255,255,.92);
+  border:1px solid var(--line);
+  border-radius:8px;
+}
+.log-row p{margin:6px 0 0}
+.log-meta{display:grid;justify-items:end;gap:6px;color:var(--muted);font-size:12px;white-space:nowrap}
 .modal-footer{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}
 #toast{
   position:fixed;
