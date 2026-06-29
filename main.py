@@ -68,6 +68,7 @@ def init_db() -> None:
                 items TEXT NOT NULL DEFAULT '[]',
                 layout_mode TEXT NOT NULL DEFAULT 'full',
                 fit_mode TEXT NOT NULL DEFAULT 'contain',
+                transition_mode TEXT NOT NULL DEFAULT 'fade',
                 created_at INTEGER NOT NULL
             );
             CREATE TABLE IF NOT EXISTS screens (
@@ -96,6 +97,8 @@ def init_db() -> None:
             conn.execute("ALTER TABLE playlists ADD COLUMN layout_mode TEXT NOT NULL DEFAULT 'full'")
         if "fit_mode" not in playlist_columns:
             conn.execute("ALTER TABLE playlists ADD COLUMN fit_mode TEXT NOT NULL DEFAULT 'contain'")
+        if "transition_mode" not in playlist_columns:
+            conn.execute("ALTER TABLE playlists ADD COLUMN transition_mode TEXT NOT NULL DEFAULT 'fade'")
 
 
 init_db()
@@ -191,6 +194,35 @@ def normalize_fit_mode(value: str) -> str:
     cleaned = (value or "contain").strip().lower()
     if cleaned not in {"contain", "cover"}:
         raise HTTPException(400, "Invalid fit mode")
+    return cleaned
+
+
+def normalize_transition_mode(value: str) -> str:
+    cleaned = (value or "fade").strip().lower()
+    allowed = {
+        "none",
+        "fade",
+        "slide-left",
+        "slide-right",
+        "slide-up",
+        "slide-down",
+        "zoom-in",
+        "zoom-out",
+        "push",
+        "wipe",
+        "dissolve",
+        "flip",
+        "rotate",
+        "cube",
+        "blur",
+        "crossfade",
+        "split",
+        "circle",
+        "curtain",
+        "random",
+    }
+    if cleaned not in allowed:
+        raise HTTPException(400, "Invalid transition mode")
     return cleaned
 
 
@@ -327,6 +359,7 @@ def create_playlist(
     items: str = Form("[]"),
     layout_mode: str = Form("full"),
     fit_mode: str = Form("contain"),
+    transition_mode: str = Form("fade"),
 ) -> dict:
     try:
         parsed = json.loads(items)
@@ -334,10 +367,11 @@ def create_playlist(
         raise HTTPException(400, "Invalid playlist") from exc
     cleaned_layout = normalize_layout_mode(layout_mode)
     cleaned_fit = normalize_fit_mode(fit_mode)
+    cleaned_transition = normalize_transition_mode(transition_mode)
     with db() as conn:
         cursor = conn.execute(
-            "INSERT INTO playlists(name, items, layout_mode, fit_mode, created_at) VALUES(?,?,?,?,?)",
-            (name.strip() or "Untitled playlist", json.dumps(parsed), cleaned_layout, cleaned_fit, int(time.time())),
+            "INSERT INTO playlists(name, items, layout_mode, fit_mode, transition_mode, created_at) VALUES(?,?,?,?,?,?)",
+            (name.strip() or "Untitled playlist", json.dumps(parsed), cleaned_layout, cleaned_fit, cleaned_transition, int(time.time())),
         )
     return {"id": cursor.lastrowid}
 
@@ -349,6 +383,7 @@ def update_playlist(
     items: str = Form("[]"),
     layout_mode: str = Form("full"),
     fit_mode: str = Form("contain"),
+    transition_mode: str = Form("fade"),
 ) -> dict:
     try:
         parsed = json.loads(items)
@@ -356,6 +391,7 @@ def update_playlist(
         raise HTTPException(400, "Invalid playlist") from exc
     cleaned_layout = normalize_layout_mode(layout_mode)
     cleaned_fit = normalize_fit_mode(fit_mode)
+    cleaned_transition = normalize_transition_mode(transition_mode)
     cleaned: list[dict] = []
     for item in parsed:
         media_id = int(item.get("media_id") or 0)
@@ -366,8 +402,8 @@ def update_playlist(
         raise HTTPException(400, "Playlist needs at least one item")
     with db() as conn:
         cursor = conn.execute(
-            "UPDATE playlists SET name=?, items=?, layout_mode=?, fit_mode=? WHERE id=?",
-            (name.strip() or "Untitled playlist", json.dumps(cleaned), cleaned_layout, cleaned_fit, playlist_id),
+            "UPDATE playlists SET name=?, items=?, layout_mode=?, fit_mode=?, transition_mode=? WHERE id=?",
+            (name.strip() or "Untitled playlist", json.dumps(cleaned), cleaned_layout, cleaned_fit, cleaned_transition, playlist_id),
         )
         if cursor.rowcount == 0:
             raise HTTPException(404, "Playlist not found")
@@ -463,13 +499,14 @@ def player_manifest(code: str) -> dict:
     with db() as conn:
         conn.execute("UPDATE screens SET last_seen=? WHERE id=?", (int(time.time()), screen["id"]))
     items: list[dict] = []
-    playlist_meta = {"layout_mode": "full", "fit_mode": "contain"}
+    playlist_meta = {"layout_mode": "full", "fit_mode": "contain", "transition_mode": "fade"}
     if screen["playlist_id"]:
-        playlists = rows("SELECT items, layout_mode, fit_mode FROM playlists WHERE id=?", (screen["playlist_id"],))
+        playlists = rows("SELECT items, layout_mode, fit_mode, transition_mode FROM playlists WHERE id=?", (screen["playlist_id"],))
         if playlists:
             playlist_meta = {
                 "layout_mode": normalize_layout_mode(playlists[0].get("layout_mode") or "full"),
                 "fit_mode": normalize_fit_mode(playlists[0].get("fit_mode") or "contain"),
+                "transition_mode": normalize_transition_mode(playlists[0].get("transition_mode") or "fade"),
             }
             configured = json.loads(playlists[0]["items"])
             media_lookup = {m["id"]: m for m in rows("SELECT * FROM media")}

@@ -66,6 +66,31 @@ function fitLabel(mode) {
   }[mode] || "Show complete";
 }
 
+function transitionLabel(mode) {
+  return {
+    none: "No transition",
+    fade: "Fade",
+    "slide-left": "Slide left",
+    "slide-right": "Slide right",
+    "slide-up": "Slide up",
+    "slide-down": "Slide down",
+    "zoom-in": "Zoom in",
+    "zoom-out": "Zoom out",
+    push: "Push",
+    wipe: "Wipe",
+    dissolve: "Dissolve",
+    flip: "Flip",
+    rotate: "Rotate",
+    cube: "Cube",
+    blur: "Blur",
+    crossfade: "Crossfade",
+    split: "Split",
+    circle: "Circle reveal",
+    curtain: "Curtain",
+    random: "Random",
+  }[mode] || "Fade";
+}
+
 function mediaById(mediaId) {
   return state.media.find((item) => item.id === Number(mediaId));
 }
@@ -180,6 +205,7 @@ function playlistCard(playlist) {
         <h3>${escapeHtml(playlist.name)}</h3>
         <p>${duration} seconds per loop</p>
         <p>${escapeHtml(layoutLabel(playlist.layout_mode))} · ${escapeHtml(fitLabel(playlist.fit_mode))}</p>
+        <p>${escapeHtml(transitionLabel(playlist.transition_mode || "fade"))}</p>
         <div class="card-actions">
           <button class="secondary" onclick="editPlaylist(${playlist.id})">Edit playlist</button>
         </div>
@@ -294,6 +320,31 @@ function playlistEditorMarkup(playlist, selectedItems) {
         <select name="fit_mode">
           <option value="contain" ${playlist.fit_mode === "contain" ? "selected" : ""}>Show complete image</option>
           <option value="cover" ${playlist.fit_mode === "cover" ? "selected" : ""}>Fill more of the screen</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Transition</label>
+        <select name="transition_mode">
+          <option value="none" ${(playlist.transition_mode || "fade") === "none" ? "selected" : ""}>No transition</option>
+          <option value="fade" ${(playlist.transition_mode || "fade") === "fade" ? "selected" : ""}>Fade</option>
+          <option value="slide-left" ${(playlist.transition_mode || "fade") === "slide-left" ? "selected" : ""}>Slide left</option>
+          <option value="slide-right" ${(playlist.transition_mode || "fade") === "slide-right" ? "selected" : ""}>Slide right</option>
+          <option value="slide-up" ${(playlist.transition_mode || "fade") === "slide-up" ? "selected" : ""}>Slide up</option>
+          <option value="slide-down" ${(playlist.transition_mode || "fade") === "slide-down" ? "selected" : ""}>Slide down</option>
+          <option value="zoom-in" ${(playlist.transition_mode || "fade") === "zoom-in" ? "selected" : ""}>Zoom in</option>
+          <option value="zoom-out" ${(playlist.transition_mode || "fade") === "zoom-out" ? "selected" : ""}>Zoom out</option>
+          <option value="push" ${(playlist.transition_mode || "fade") === "push" ? "selected" : ""}>Push</option>
+          <option value="wipe" ${(playlist.transition_mode || "fade") === "wipe" ? "selected" : ""}>Wipe</option>
+          <option value="dissolve" ${(playlist.transition_mode || "fade") === "dissolve" ? "selected" : ""}>Dissolve</option>
+          <option value="flip" ${(playlist.transition_mode || "fade") === "flip" ? "selected" : ""}>Flip</option>
+          <option value="rotate" ${(playlist.transition_mode || "fade") === "rotate" ? "selected" : ""}>Rotate</option>
+          <option value="cube" ${(playlist.transition_mode || "fade") === "cube" ? "selected" : ""}>Cube</option>
+          <option value="blur" ${(playlist.transition_mode || "fade") === "blur" ? "selected" : ""}>Blur</option>
+          <option value="crossfade" ${(playlist.transition_mode || "fade") === "crossfade" ? "selected" : ""}>Crossfade</option>
+          <option value="split" ${(playlist.transition_mode || "fade") === "split" ? "selected" : ""}>Split</option>
+          <option value="circle" ${(playlist.transition_mode || "fade") === "circle" ? "selected" : ""}>Circle reveal</option>
+          <option value="curtain" ${(playlist.transition_mode || "fade") === "curtain" ? "selected" : ""}>Curtain</option>
+          <option value="random" ${(playlist.transition_mode || "fade") === "random" ? "selected" : ""}>Random</option>
         </select>
       </div>
     </div>
@@ -417,6 +468,31 @@ function openPlaylistBuilder() {
           <option value="cover">Fill more of the screen</option>
         </select>
       </div>
+      <div class="field">
+        <label>Transition</label>
+        <select name="transition_mode">
+          <option value="none">No transition</option>
+          <option value="fade" selected>Fade</option>
+          <option value="slide-left">Slide left</option>
+          <option value="slide-right">Slide right</option>
+          <option value="slide-up">Slide up</option>
+          <option value="slide-down">Slide down</option>
+          <option value="zoom-in">Zoom in</option>
+          <option value="zoom-out">Zoom out</option>
+          <option value="push">Push</option>
+          <option value="wipe">Wipe</option>
+          <option value="dissolve">Dissolve</option>
+          <option value="flip">Flip</option>
+          <option value="rotate">Rotate</option>
+          <option value="cube">Cube</option>
+          <option value="blur">Blur</option>
+          <option value="crossfade">Crossfade</option>
+          <option value="split">Split</option>
+          <option value="circle">Circle reveal</option>
+          <option value="curtain">Curtain</option>
+          <option value="random">Random</option>
+        </select>
+      </div>
     </div>
     <div class="field"><label>Choose content</label><div class="picker picker-wide">${state.media.map((media) => `<label class="pick"><input type="checkbox" name="media" value="${media.id}"><span>${escapeHtml(media.name)}</span></label>`).join("")}</div></div>
     <div class="field"><label>Default duration (seconds)</label><input name="duration" type="number" min="2" value="10"></div>
@@ -428,6 +504,7 @@ function openPlaylistBuilder() {
     payload.set("name", formData.get("name"));
     payload.set("layout_mode", formData.get("layout_mode"));
     payload.set("fit_mode", formData.get("fit_mode"));
+    payload.set("transition_mode", formData.get("transition_mode"));
     payload.set("items", JSON.stringify(ids.map((id) => ({ media_id: Number(id), duration: Number(formData.get("duration")) }))));
     await api("/api/playlists", { method: "POST", body: payload });
     toast("Playlist created");
@@ -494,6 +571,7 @@ window.editPlaylist = async (playlistId) => {
     payload.set("name", formData.get("name"));
     payload.set("layout_mode", formData.get("layout_mode"));
     payload.set("fit_mode", formData.get("fit_mode"));
+    payload.set("transition_mode", formData.get("transition_mode"));
     payload.set("items", JSON.stringify(items));
     await api(`/api/playlists/${playlistId}`, { method: "PUT", body: payload });
     toast("Playlist updated");

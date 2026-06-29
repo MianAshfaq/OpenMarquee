@@ -2,8 +2,10 @@ const pair = document.querySelector("#pair");
 const stage = document.querySelector("#stage");
 const form = document.querySelector("#pair-form");
 const input = document.querySelector("#code");
+const fullscreenToggle = document.querySelector("#fullscreen-toggle");
 
 const imageAnimations = ["kenburns-in", "kenburns-out", "pan-left", "pan-right", "float-rise", "cinema-sweep"];
+const transitionEffects = ["fade", "slide-left", "slide-right", "slide-up", "slide-down", "zoom-in", "zoom-out", "push", "wipe", "dissolve", "flip", "rotate", "cube", "blur", "crossfade", "split", "circle", "curtain"];
 
 let code = localStorage.getItem("openmarquee-code") || "";
 let manifest = null;
@@ -74,11 +76,14 @@ async function sync(first = false) {
 
 function transitionScene(nextScene) {
   const currentScene = stage.querySelector(".scene.active");
+  const effect = currentTransitionEffect();
+  applyTransitionClass(nextScene, effect);
   if (!currentScene) {
     nextScene.classList.add("active");
     stage.replaceChildren(nextScene);
     return;
   }
+  applyTransitionClass(currentScene, effect);
   currentScene.classList.remove("active");
   currentScene.classList.add("scene-exit");
   nextScene.classList.add("active");
@@ -86,6 +91,17 @@ function transitionScene(nextScene) {
   window.setTimeout(() => {
     if (currentScene.parentNode === stage) currentScene.remove();
   }, 900);
+}
+
+function applyTransitionClass(element, effect) {
+  [...element.classList].filter((name) => name.startsWith("transition-")).forEach((name) => element.classList.remove(name));
+  element.classList.add(`transition-${effect}`);
+}
+
+function currentTransitionEffect() {
+  const mode = manifest?.transition_mode || "fade";
+  if (mode === "random") return transitionEffects[index % transitionEffects.length];
+  return mode;
 }
 
 function normalizeYouTubeUrl(value) {
@@ -283,6 +299,28 @@ async function play(sceneIndex) {
 function next() {
   play((index + layoutSize()) % manifest.items.length);
 }
+
+async function requestFullscreenMode() {
+  if (document.fullscreenElement) return;
+  try {
+    await document.documentElement.requestFullscreen();
+  } catch {}
+}
+
+fullscreenToggle.onclick = async () => {
+  if (document.fullscreenElement) {
+    await document.exitFullscreen().catch(() => {});
+    return;
+  }
+  await requestFullscreenMode();
+};
+stage.ondblclick = () => requestFullscreenMode();
+document.addEventListener("keydown", (event) => {
+  if (event.key.toLowerCase() === "f") requestFullscreenMode();
+});
+document.addEventListener("fullscreenchange", () => {
+  fullscreenToggle.textContent = document.fullscreenElement ? "Exit fullscreen" : "Fullscreen";
+});
 
 if (code) sync(true);
 window.setInterval(() => sync(false), 15000);

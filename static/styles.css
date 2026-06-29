@@ -215,7 +215,7 @@ dialog form{padding:28px;position:relative}
 .helper-text{margin:0;color:var(--muted);font-size:12px;line-height:1.5}
 .playlist-config-grid{
   display:grid;
-  grid-template-columns:repeat(2,minmax(0,1fr));
+  grid-template-columns:repeat(3,minmax(0,1fr));
   gap:12px;
 }
 .playlist-tools{
