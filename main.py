@@ -69,6 +69,7 @@ def init_db() -> None:
                 layout_mode TEXT NOT NULL DEFAULT 'full',
                 fit_mode TEXT NOT NULL DEFAULT 'contain',
                 transition_mode TEXT NOT NULL DEFAULT 'fade',
+                transition_modes TEXT NOT NULL DEFAULT '["fade"]',
                 created_at INTEGER NOT NULL
             );
             CREATE TABLE IF NOT EXISTS screens (
@@ -99,6 +100,8 @@ def init_db() -> None:
             conn.execute("ALTER TABLE playlists ADD COLUMN fit_mode TEXT NOT NULL DEFAULT 'contain'")
         if "transition_mode" not in playlist_columns:
             conn.execute("ALTER TABLE playlists ADD COLUMN transition_mode TEXT NOT NULL DEFAULT 'fade'")
+        if "transition_modes" not in playlist_columns:
+            conn.execute("""ALTER TABLE playlists ADD COLUMN transition_modes TEXT NOT NULL DEFAULT '["fade"]'""")
 
 
 init_db()
@@ -224,6 +227,23 @@ def normalize_transition_mode(value: str) -> str:
     if cleaned not in allowed:
         raise HTTPException(400, "Invalid transition mode")
     return cleaned
+
+
+def normalize_transition_modes(value: str) -> list[str]:
+    try:
+        parsed = json.loads(value or "[]")
+    except json.JSONDecodeError as exc:
+        raise HTTPException(400, "Invalid transition list") from exc
+    if not isinstance(parsed, list):
+        raise HTTPException(400, "Transition list must be an array")
+    cleaned = []
+    for item in parsed:
+        cleaned.append(normalize_transition_mode(str(item)))
+    deduped = []
+    for item in cleaned:
+        if item not in deduped:
+            deduped.append(item)
+    return deduped or ["fade"]
 
 
 def parse_rss_feed(feed_url: str) -> dict:
@@ -360,6 +380,7 @@ def create_playlist(
     layout_mode: str = Form("full"),
     fit_mode: str = Form("contain"),
     transition_mode: str = Form("fade"),
+    transition_modes: str = Form('["fade"]'),
 ) -> dict:
     try:
         parsed = json.loads(items)
@@ -368,10 +389,19 @@ def create_playlist(
     cleaned_layout = normalize_layout_mode(layout_mode)
     cleaned_fit = normalize_fit_mode(fit_mode)
     cleaned_transition = normalize_transition_mode(transition_mode)
+    cleaned_transitions = normalize_transition_modes(transition_modes)
     with db() as conn:
         cursor = conn.execute(
-            "INSERT INTO playlists(name, items, layout_mode, fit_mode, transition_mode, created_at) VALUES(?,?,?,?,?,?)",
-            (name.strip() or "Untitled playlist", json.dumps(parsed), cleaned_layout, cleaned_fit, cleaned_transition, int(time.time())),
+            "INSERT INTO playlists(name, items, layout_mode, fit_mode, transition_mode, transition_modes, created_at) VALUES(?,?,?,?,?,?,?)",
+            (
+                name.strip() or "Untitled playlist",
+                json.dumps(parsed),
+                cleaned_layout,
+                cleaned_fit,
+                cleaned_transition,
+                json.dumps(cleaned_transitions),
+                int(time.time()),
+            ),
         )
     return {"id": cursor.lastrowid}
 
@@ -384,6 +414,7 @@ def update_playlist(
     layout_mode: str = Form("full"),
     fit_mode: str = Form("contain"),
     transition_mode: str = Form("fade"),
+    transition_modes: str = Form('["fade"]'),
 ) -> dict:
     try:
         parsed = json.loads(items)
@@ -392,6 +423,7 @@ def update_playlist(
     cleaned_layout = normalize_layout_mode(layout_mode)
     cleaned_fit = normalize_fit_mode(fit_mode)
     cleaned_transition = normalize_transition_mode(transition_mode)
+    cleaned_transitions = normalize_transition_modes(transition_modes)
     cleaned: list[dict] = []
     for item in parsed:
         media_id = int(item.get("media_id") or 0)
@@ -402,9 +434,27 @@ def update_playlist(
         raise HTTPException(400, "Playlist needs at least one item")
     with db() as conn:
         cursor = conn.execute(
-            "UPDATE playlists SET name=?, items=?, layout_mode=?, fit_mode=?, transition_mode=? WHERE id=?",
-            (name.strip() or "Untitled playlist", json.dumps(cleaned), cleaned_layout, cleaned_fit, cleaned_transition, playlist_id),
+            "UPDATE playlists SET name=?, items=?, layout_mode=?, fit_mode=?, transition_mode=?, transition_modes=? WHERE id=?",
+            (
+                name.strip() or "Untitled playlist",
+                json.dumps(cleaned),
+                cleaned_layout,
+                cleaned_fit,
+                cleaned_transition,
+                json.dumps(cleaned_transitions),
+                playlist_id,
+            ),
         )
+        if cursor.rowcount == 0:
+            raise HTTPException(404, "Playlist not found")
+    return {"ok": True}
+
+
+@app.delete("/api/playlists/{playlist_id}")
+def delete_playlist(playlist_id: int) -> dict:
+    with db() as conn:
+        conn.execute("UPDATE screens SET playlist_id=NULL WHERE playlist_id=?", (playlist_id,))
+        cursor = conn.execute("DELETE FROM playlists WHERE id=?", (playlist_id,))
         if cursor.rowcount == 0:
             raise HTTPException(404, "Playlist not found")
     return {"ok": True}
@@ -499,14 +549,17 @@ def player_manifest(code: str) -> dict:
     with db() as conn:
         conn.execute("UPDATE screens SET last_seen=? WHERE id=?", (int(time.time()), screen["id"]))
     items: list[dict] = []
-    playlist_meta = {"layout_mode": "full", "fit_mode": "contain", "transition_mode": "fade"}
+    playlist_meta = {"layout_mode": "full", "fit_mode": "contain", "transition_mode": "fade", "transition_modes": ["fade"]}
     if screen["playlist_id"]:
-        playlists = rows("SELECT items, layout_mode, fit_mode, transition_mode FROM playlists WHERE id=?", (screen["playlist_id"],))
+        playlists = rows("SELECT items, layout_mode, fit_mode, transition_mode, transition_modes FROM playlists WHERE id=?", (screen["playlist_id"],))
         if playlists:
+            transition_modes_raw = playlists[0].get("transition_modes") or json.dumps([playlists[0].get("transition_mode") or "fade"])
+            transition_modes = normalize_transition_modes(transition_modes_raw)
             playlist_meta = {
                 "layout_mode": normalize_layout_mode(playlists[0].get("layout_mode") or "full"),
                 "fit_mode": normalize_fit_mode(playlists[0].get("fit_mode") or "contain"),
-                "transition_mode": normalize_transition_mode(playlists[0].get("transition_mode") or "fade"),
+                "transition_mode": transition_modes[0],
+                "transition_modes": transition_modes,
             }
             configured = json.loads(playlists[0]["items"])
             media_lookup = {m["id"]: m for m in rows("SELECT * FROM media")}
