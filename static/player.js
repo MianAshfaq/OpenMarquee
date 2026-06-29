@@ -6,14 +6,17 @@ const fullscreenToggle = document.querySelector("#fullscreen-toggle");
 
 const imageAnimations = ["kenburns-in", "kenburns-out", "pan-left", "pan-right", "float-rise", "cinema-sweep"];
 const transitionEffects = ["fade", "slide-left", "slide-right", "slide-up", "slide-down", "zoom-in", "zoom-out", "push", "wipe", "dissolve", "flip", "rotate", "cube", "blur", "crossfade", "split", "circle", "curtain"];
+const params = new URLSearchParams(window.location.search);
 
-let code = localStorage.getItem("openmarquee-code") || "";
+let code = (params.get("code") || localStorage.getItem("openmarquee-code") || "").trim().toUpperCase();
 let manifest = null;
 let manifestKey = "";
 let index = 0;
 let timer = null;
+let controlTimer = null;
 
 input.value = code;
+if (code) localStorage.setItem("openmarquee-code", code);
 
 form.onsubmit = (event) => {
   event.preventDefault();
@@ -30,6 +33,7 @@ function buildManifestKey(nextManifest) {
     playlist: nextManifest?.screen?.playlist_id || "",
     layout: nextManifest?.layout_mode || "full",
     fit: nextManifest?.fit_mode || "contain",
+    transitions: nextManifest?.transition_modes || [nextManifest?.transition_mode || "fade"],
     items: items.map((item) => ({
       filename: item.filename,
       duration: item.duration,
@@ -74,23 +78,13 @@ async function sync(first = false) {
   }
 }
 
-function transitionScene(nextScene) {
-  const currentScene = stage.querySelector(".scene.active");
-  const effect = currentTransitionEffect();
-  applyTransitionClass(nextScene, effect);
-  if (!currentScene) {
-    nextScene.classList.add("active");
-    stage.replaceChildren(nextScene);
-    return;
-  }
-  applyTransitionClass(currentScene, effect);
-  currentScene.classList.remove("active");
-  currentScene.classList.add("scene-exit");
-  nextScene.classList.add("active");
-  stage.appendChild(nextScene);
-  window.setTimeout(() => {
-    if (currentScene.parentNode === stage) currentScene.remove();
-  }, 900);
+function currentTransitionEffect() {
+  const modes = Array.isArray(manifest?.transition_modes) && manifest.transition_modes.length
+    ? manifest.transition_modes
+    : [manifest?.transition_mode || "fade"];
+  const selected = modes[index % modes.length] || "fade";
+  if (selected === "random") return transitionEffects[(index * 5) % transitionEffects.length];
+  return selected;
 }
 
 function applyTransitionClass(element, effect) {
@@ -98,25 +92,47 @@ function applyTransitionClass(element, effect) {
   element.classList.add(`transition-${effect}`);
 }
 
-function currentTransitionEffect() {
-  const mode = manifest?.transition_mode || "fade";
-  if (mode === "random") return transitionEffects[index % transitionEffects.length];
-  return mode;
+function transitionScene(nextScene) {
+  const currentScene = stage.querySelector(".scene.active");
+  const effect = currentTransitionEffect();
+  applyTransitionClass(nextScene, effect);
+
+  if (!currentScene) {
+    stage.replaceChildren(nextScene);
+    requestAnimationFrame(() => nextScene.classList.add("active"));
+    return;
+  }
+
+  applyTransitionClass(currentScene, effect);
+  nextScene.classList.remove("active", "scene-exit");
+  stage.appendChild(nextScene);
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      currentScene.classList.remove("active");
+      currentScene.classList.add("scene-exit");
+      nextScene.classList.add("active");
+    });
+  });
+  window.setTimeout(() => {
+    if (currentScene.parentNode === stage) currentScene.remove();
+  }, 1100);
 }
 
 function normalizeYouTubeUrl(value) {
   try {
     const url = new URL(value, window.location.origin);
+    let videoId = "";
     if (url.hostname.includes("youtu.be")) {
-      const id = url.pathname.replace("/", "");
-      return `https://www.youtube.com/embed/${id}?autoplay=1&mute=1&controls=0&loop=1&playlist=${id}`;
+      videoId = url.pathname.replace("/", "");
+    } else if (url.hostname.includes("youtube.com")) {
+      videoId = url.searchParams.get("v") || url.pathname.split("/").filter(Boolean).pop() || "";
     }
-    if (url.hostname.includes("youtube.com")) {
-      const id = url.searchParams.get("v") || url.pathname.split("/").pop();
-      if (id) return `https://www.youtube.com/embed/${id}?autoplay=1&mute=1&controls=0&loop=1&playlist=${id}`;
-    }
-  } catch {}
-  return value;
+    if (!videoId) return value;
+    const origin = encodeURIComponent(window.location.origin);
+    return `https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&mute=0&controls=0&loop=1&playlist=${videoId}&playsinline=1&rel=0&modestbranding=1&enablejsapi=1&origin=${origin}`;
+  } catch {
+    return value;
+  }
 }
 
 function fitMode() {
@@ -125,6 +141,14 @@ function fitMode() {
 
 function layoutSize() {
   return { full: 1, "split-2": 2, "split-4": 4 }[manifest?.layout_mode || "full"] || 1;
+}
+
+function sceneMediaDuration(items) {
+  return Math.max(...items.map((item) => Number(item.duration || 10)));
+}
+
+function playbackNeedsTimer(items) {
+  return !items.some((item) => ["video", "stream", "iptv", "audio", "youtube"].includes(item.kind));
 }
 
 function createIdleScene() {
@@ -142,6 +166,11 @@ function createIdleScene() {
   return scene;
 }
 
+function attemptPlay(mediaElement) {
+  const promise = mediaElement.play?.();
+  if (promise && typeof promise.catch === "function") promise.catch(() => {});
+}
+
 function createImagePanel(item, animationIndex, splitMode = false) {
   const panel = document.createElement("div");
   panel.className = `panel panel-image ${splitMode ? "panel-split" : ""} ${imageAnimations[animationIndex % imageAnimations.length]}`;
@@ -157,7 +186,7 @@ function createImagePanel(item, animationIndex, splitMode = false) {
   const image = document.createElement("img");
   image.className = "panel-media panel-image-media";
   image.src = item.url;
-  image.alt = "";
+  image.alt = item.name || "";
   image.dataset.fit = fitMode();
 
   panel.append(backdrop, fill, image);
@@ -180,11 +209,16 @@ function createVideoPanel(item) {
   video.className = "panel-media panel-video-media";
   video.src = item.url;
   video.autoplay = true;
-  video.muted = true;
+  video.muted = false;
   video.playsInline = true;
+  video.controls = false;
   video.dataset.fit = fitMode();
+  video.onended = () => next();
+  video.onerror = () => next();
 
   panel.append(backdrop, video);
+  attemptPlay(backdrop);
+  attemptPlay(video);
   return panel;
 }
 
@@ -193,8 +227,8 @@ function createIframePanel(item) {
   panel.className = "panel panel-iframe";
   const iframe = document.createElement("iframe");
   iframe.className = "panel-media panel-iframe-media";
-  iframe.allow = "autoplay; fullscreen";
-  iframe.referrerPolicy = "no-referrer-when-downgrade";
+  iframe.allow = "autoplay; fullscreen; encrypted-media; picture-in-picture";
+  iframe.referrerPolicy = "strict-origin-when-cross-origin";
   iframe.src = item.kind === "youtube" ? normalizeYouTubeUrl(item.url) : item.url;
   panel.appendChild(iframe);
   return panel;
@@ -205,17 +239,18 @@ function createAudioPanel(item) {
   panel.className = "panel panel-audio";
   panel.innerHTML = `
     <div class="audio-mini">
-      <strong>${item.name}</strong>
-      <span>Audio</span>
+      <strong>${escapeHtml(item.name || "Audio")}</strong>
+      <span>Audio playback</span>
       <div class="audio-bars"><span></span><span></span><span></span><span></span><span></span></div>
     </div>
   `;
   const audio = document.createElement("audio");
   audio.src = item.url;
   audio.autoplay = true;
-  audio.onended = next;
-  audio.onerror = next;
+  audio.onended = () => next();
+  audio.onerror = () => next();
   panel.appendChild(audio);
+  attemptPlay(audio);
   return panel;
 }
 
@@ -228,8 +263,8 @@ async function createRssPanel(item) {
   panel.innerHTML = `
     <div class="rss-mini">
       <p>LIVE FEED</p>
-      <strong>${feed.title || item.name}</strong>
-      ${(feed.items || []).slice(0, 3).map((entry) => `<span>${entry.title || "Untitled item"}</span>`).join("")}
+      <strong>${escapeHtml(feed.title || item.name || "RSS Feed")}</strong>
+      ${(feed.items || []).slice(0, 3).map((entry) => `<span>${escapeHtml(entry.title || "Untitled item")}</span>`).join("")}
     </div>
   `;
   return panel;
@@ -290,13 +325,13 @@ async function play(sceneIndex) {
 
   transitionScene(scene);
 
-  const sceneDuration = Math.max(...items.map((item) => Number(item.duration || 10)));
-  if (!items.some((item) => ["video", "stream", "iptv", "audio"].includes(item.kind))) {
-    timer = window.setTimeout(next, Math.max(4, sceneDuration) * 1000);
+  if (playbackNeedsTimer(items)) {
+    timer = window.setTimeout(next, Math.max(4, sceneMediaDuration(items)) * 1000);
   }
 }
 
 function next() {
+  if (!manifest?.items?.length) return;
   play((index + layoutSize()) % manifest.items.length);
 }
 
@@ -307,20 +342,54 @@ async function requestFullscreenMode() {
   } catch {}
 }
 
+function hideFullscreenControl() {
+  fullscreenToggle.classList.add("hidden");
+}
+
+function showFullscreenControl() {
+  fullscreenToggle.classList.remove("hidden");
+  clearTimeout(controlTimer);
+  if (document.fullscreenElement) {
+    controlTimer = window.setTimeout(hideFullscreenControl, 1800);
+  }
+}
+
 fullscreenToggle.onclick = async () => {
   if (document.fullscreenElement) {
     await document.exitFullscreen().catch(() => {});
+    hideFullscreenControl();
     return;
   }
   await requestFullscreenMode();
+  showFullscreenControl();
 };
+
 stage.ondblclick = () => requestFullscreenMode();
+document.addEventListener("mousemove", showFullscreenControl);
+document.addEventListener("touchstart", showFullscreenControl, { passive: true });
 document.addEventListener("keydown", (event) => {
   if (event.key.toLowerCase() === "f") requestFullscreenMode();
+  if (event.key === "Escape") {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    hideFullscreenControl();
+  } else {
+    showFullscreenControl();
+  }
 });
 document.addEventListener("fullscreenchange", () => {
-  fullscreenToggle.textContent = document.fullscreenElement ? "Exit fullscreen" : "Fullscreen";
+  fullscreenToggle.innerHTML = document.fullscreenElement
+    ? '<i class="fa-solid fa-compress"></i><span>Exit fullscreen</span>'
+    : '<i class="fa-solid fa-expand"></i><span>Fullscreen</span>';
+  if (document.fullscreenElement) showFullscreenControl();
+  else hideFullscreenControl();
 });
 
+function escapeHtml(value) {
+  const el = document.createElement("div");
+  el.textContent = value ?? "";
+  return el.innerHTML;
+}
+
+showFullscreenControl();
 if (code) sync(true);
 window.setInterval(() => sync(false), 15000);

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import ipaddress
 import json
 import mimetypes
+import os
 import secrets
 import shutil
 import sqlite3
@@ -13,14 +17,16 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 ROOT = Path(__file__).parent
 DB_PATH = ROOT / "data" / "openmarquee.db"
 UPLOADS = ROOT / "uploads"
 STATIC = ROOT / "static"
+SECRET_PATH = ROOT / "data" / ".secret_key"
+BOOTSTRAP_PATH = ROOT / "data" / "admin-bootstrap.txt"
 UPLOADS.mkdir(exist_ok=True)
 DB_PATH.parent.mkdir(exist_ok=True)
 
@@ -28,6 +34,11 @@ app = FastAPI(title="OpenMarquee", version="0.1.0")
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 app.mount("/media", StaticFiles(directory=UPLOADS), name="media")
 PING_CACHE: dict[str, tuple[int, bool]] = {}
+SESSION_COOKIE = "openmarquee_session"
+SESSION_TTL_SECONDS = 60 * 60 * 12
+MAX_UPLOAD_BYTES = int(os.getenv("OPENMARQUEE_MAX_UPLOAD_BYTES", str(1024 * 1024 * 1024)))
+ADMIN_USERNAME = os.getenv("OPENMARQUEE_ADMIN_USERNAME", "admin").strip() or "admin"
+TRUSTED_HOSTS = {host.strip().lower() for host in os.getenv("OPENMARQUEE_TRUSTED_HOSTS", "").split(",") if host.strip()}
 URL_MEDIA_KINDS = {
     "webpage",
     "dashboard",
@@ -41,6 +52,46 @@ URL_MEDIA_KINDS = {
     "audio",
     "html",
 }
+SCREEN_BRANDS = {
+    "unknown",
+    "samsung",
+    "lg",
+    "sony",
+    "hisense",
+    "tcl",
+    "philips",
+    "panasonic",
+    "sharp",
+    "vizio",
+    "android-tv",
+    "google-tv",
+    "amazon-fire-tv",
+    "raspberry-pi",
+    "windows",
+    "chromeos",
+    "other",
+}
+SCREEN_RUNTIMES = {
+    "browser",
+    "android-tv-app",
+    "fire-tv-app",
+    "raspberry-pi-kiosk",
+    "samsung-tizen",
+    "lg-webos",
+    "windows-kiosk",
+    "chromeos-kiosk",
+}
+
+
+def load_secret_key() -> str:
+    if SECRET_PATH.exists():
+        return SECRET_PATH.read_text(encoding="utf-8").strip()
+    secret = os.getenv("OPENMARQUEE_SECRET_KEY", "").strip() or secrets.token_urlsafe(48)
+    SECRET_PATH.write_text(secret, encoding="utf-8")
+    return secret
+
+
+SECRET_KEY = load_secret_key()
 
 
 def db() -> sqlite3.Connection:
@@ -78,10 +129,17 @@ def init_db() -> None:
                 code TEXT NOT NULL UNIQUE,
                 playlist_id INTEGER,
                 orientation TEXT NOT NULL DEFAULT 'landscape',
+                brand TEXT NOT NULL DEFAULT 'unknown',
+                model TEXT,
+                runtime TEXT NOT NULL DEFAULT 'browser',
                 ip_address TEXT,
                 notes TEXT,
                 last_seen INTEGER,
                 created_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
             );
             """
         )
@@ -90,6 +148,12 @@ def init_db() -> None:
             conn.execute("ALTER TABLE screens ADD COLUMN ip_address TEXT")
         if "notes" not in columns:
             conn.execute("ALTER TABLE screens ADD COLUMN notes TEXT")
+        if "brand" not in columns:
+            conn.execute("ALTER TABLE screens ADD COLUMN brand TEXT NOT NULL DEFAULT 'unknown'")
+        if "model" not in columns:
+            conn.execute("ALTER TABLE screens ADD COLUMN model TEXT")
+        if "runtime" not in columns:
+            conn.execute("ALTER TABLE screens ADD COLUMN runtime TEXT NOT NULL DEFAULT 'browser'")
         media_columns = {row["name"] for row in conn.execute("PRAGMA table_info(media)").fetchall()}
         if "source_url" not in media_columns:
             conn.execute("ALTER TABLE media ADD COLUMN source_url TEXT")
@@ -102,14 +166,166 @@ def init_db() -> None:
             conn.execute("ALTER TABLE playlists ADD COLUMN transition_mode TEXT NOT NULL DEFAULT 'fade'")
         if "transition_modes" not in playlist_columns:
             conn.execute("""ALTER TABLE playlists ADD COLUMN transition_modes TEXT NOT NULL DEFAULT '["fade"]'""")
-
-
-init_db()
+        password_row = conn.execute("SELECT value FROM settings WHERE key='admin_password_hash'").fetchone()
+        if not password_row:
+            initial_password = os.getenv("OPENMARQUEE_ADMIN_PASSWORD", "").strip() or "admin@123"
+            conn.execute(
+                "INSERT INTO settings(key, value) VALUES(?, ?)",
+                ("admin_password_hash", hash_password(initial_password)),
+            )
+            BOOTSTRAP_PATH.write_text(
+                f"OpenMarquee bootstrap credentials\nusername={ADMIN_USERNAME}\npassword={initial_password}\n",
+                encoding="utf-8",
+            )
 
 
 def rows(query: str, params: tuple = ()) -> list[dict]:
     with db() as conn:
         return [dict(row) for row in conn.execute(query, params).fetchall()]
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt), 240000).hex()
+    return f"{salt}${digest}"
+
+
+def verify_password(password: str, stored_value: str) -> bool:
+    try:
+        salt, expected = stored_value.split("$", 1)
+    except ValueError:
+        return False
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt), 240000).hex()
+    return hmac.compare_digest(digest, expected)
+
+
+init_db()
+
+
+def read_setting(key: str) -> str | None:
+    with db() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def write_setting(key: str, value: str) -> None:
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
+
+
+def issue_session_token(username: str) -> str:
+    expires_at = int(time.time()) + SESSION_TTL_SECONDS
+    payload = f"{username}|{expires_at}"
+    signature = hmac.new(SECRET_KEY.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return base64.urlsafe_b64encode(f"{payload}|{signature}".encode("utf-8")).decode("ascii")
+
+
+def decode_session_token(token: str | None) -> str | None:
+    if not token:
+        return None
+    try:
+        raw = base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8")
+        username, expires_at_raw, signature = raw.split("|", 2)
+        payload = f"{username}|{expires_at_raw}"
+    except Exception:  # noqa: BLE001
+        return None
+    expected_signature = hmac.new(SECRET_KEY.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected_signature):
+        return None
+    if int(expires_at_raw) < int(time.time()):
+        return None
+    if username != ADMIN_USERNAME:
+        return None
+    return username
+
+
+def set_session_cookie(response: Response, username: str) -> None:
+    response.set_cookie(
+        SESSION_COOKIE,
+        issue_session_token(username),
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        max_age=SESSION_TTL_SECONDS,
+    )
+
+
+def clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(SESSION_COOKIE, httponly=True, samesite="lax")
+
+
+def require_admin(request: Request) -> str:
+    username = decode_session_token(request.cookies.get(SESSION_COOKIE))
+    if not username:
+        raise HTTPException(401, "Please sign in")
+    return username
+
+
+def hotp_token(secret: str, counter: int, digits: int = 6) -> str:
+    key = base64.b32decode(secret.upper() + "=" * ((8 - len(secret) % 8) % 8))
+    message = counter.to_bytes(8, "big")
+    digest = hmac.new(key, message, hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    code = int.from_bytes(digest[offset : offset + 4], "big") & 0x7FFFFFFF
+    return str(code % (10**digits)).zfill(digits)
+
+
+def verify_totp(secret: str, token: str, period: int = 10, window: int = 1) -> bool:
+    cleaned = (token or "").strip().replace(" ", "")
+    if not cleaned.isdigit():
+        return False
+    counter = int(time.time() // period)
+    return any(hmac.compare_digest(hotp_token(secret, counter + offset), cleaned) for offset in range(-window, window + 1))
+
+
+def make_totp_secret() -> str:
+    return base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
+
+
+def normalize_brand(value: str) -> str:
+    cleaned = (value or "unknown").strip().lower()
+    if cleaned not in SCREEN_BRANDS:
+        raise HTTPException(400, "Invalid screen brand")
+    return cleaned
+
+
+def normalize_runtime(value: str) -> str:
+    cleaned = (value or "browser").strip().lower()
+    if cleaned not in SCREEN_RUNTIMES:
+        raise HTTPException(400, "Invalid screen runtime")
+    return cleaned
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    if TRUSTED_HOSTS:
+        host = (request.url.hostname or "").lower()
+        if host and host not in TRUSTED_HOSTS and host not in {"127.0.0.1", "localhost"}:
+            return PlainTextResponse("Invalid host header", status_code=400)
+
+    response = await call_next(request)
+    csp = (
+        "default-src 'self'; "
+        "img-src 'self' data: blob: https:; "
+        "media-src 'self' data: blob: https:; "
+        "font-src 'self' data: https://cdnjs.cloudflare.com; "
+        "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; "
+        "script-src 'self'; "
+        "connect-src 'self' https:; "
+        "frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com https:; "
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'"
+    )
+    response.headers["Content-Security-Policy"] = csp
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    return response
 
 
 def normalize_ip_address(value: str) -> str | None:
@@ -292,13 +508,107 @@ def player() -> FileResponse:
     return FileResponse(STATIC / "player.html")
 
 
+@app.get("/api/auth/session")
+def auth_session(request: Request) -> dict:
+    username = decode_session_token(request.cookies.get(SESSION_COOKIE))
+    return {
+        "authenticated": bool(username),
+        "username": username or ADMIN_USERNAME,
+        "bootstrap_path": str(BOOTSTRAP_PATH) if BOOTSTRAP_PATH.exists() else None,
+        "mfa_enabled": read_setting("mfa_enabled") == "1",
+    }
+
+
+@app.post("/api/auth/login")
+def auth_login(
+    response: Response,
+    username: str = Form(...),
+    password: str = Form(...),
+    otp: str = Form(""),
+) -> dict:
+    if username.strip() != ADMIN_USERNAME:
+        raise HTTPException(401, "Invalid username or password")
+    stored_password = read_setting("admin_password_hash")
+    if not stored_password or not verify_password(password, stored_password):
+        raise HTTPException(401, "Invalid username or password")
+    mfa_enabled = read_setting("mfa_enabled") == "1"
+    mfa_secret = read_setting("mfa_secret") or ""
+    if mfa_enabled and not verify_totp(mfa_secret, otp):
+        raise HTTPException(401, "Invalid MFA code")
+    set_session_cookie(response, ADMIN_USERNAME)
+    return {"ok": True, "username": ADMIN_USERNAME, "mfa_enabled": mfa_enabled}
+
+
+@app.post("/api/auth/logout")
+def auth_logout(response: Response, _admin: str = Depends(require_admin)) -> dict:
+    clear_session_cookie(response)
+    return {"ok": True}
+
+
+@app.post("/api/auth/password")
+def auth_password_change(
+    current_password: str = Form(...),
+    new_password: str = Form(...),
+    _admin: str = Depends(require_admin),
+) -> dict:
+    stored_password = read_setting("admin_password_hash")
+    if not stored_password or not verify_password(current_password, stored_password):
+        raise HTTPException(400, "Current password is not correct")
+    if len(new_password.strip()) < 8:
+        raise HTTPException(400, "New password must be at least 8 characters")
+    write_setting("admin_password_hash", hash_password(new_password.strip()))
+    BOOTSTRAP_PATH.unlink(missing_ok=True)
+    return {"ok": True}
+
+
+@app.post("/api/auth/mfa/setup")
+def auth_mfa_setup(_admin: str = Depends(require_admin)) -> dict:
+    secret = make_totp_secret()
+    write_setting("mfa_secret_pending", secret)
+    uri = (
+        f"otpauth://totp/OpenMarquee:{urllib.parse.quote(ADMIN_USERNAME)}"
+        f"?secret={secret}&issuer=OpenMarquee&algorithm=SHA1&digits=6&period=10"
+    )
+    return {"secret": secret, "uri": uri, "period_seconds": 10}
+
+
+@app.post("/api/auth/mfa/enable")
+def auth_mfa_enable(otp: str = Form(...), _admin: str = Depends(require_admin)) -> dict:
+    secret = read_setting("mfa_secret_pending")
+    if not secret or not verify_totp(secret, otp):
+        raise HTTPException(400, "Invalid MFA code")
+    write_setting("mfa_secret", secret)
+    write_setting("mfa_enabled", "1")
+    write_setting("mfa_secret_pending", "")
+    return {"ok": True}
+
+
+@app.post("/api/auth/mfa/disable")
+def auth_mfa_disable(
+    password: str = Form(...),
+    otp: str = Form(""),
+    _admin: str = Depends(require_admin),
+) -> dict:
+    stored_password = read_setting("admin_password_hash")
+    if not stored_password or not verify_password(password, stored_password):
+        raise HTTPException(400, "Password is not correct")
+    secret = read_setting("mfa_secret") or ""
+    if secret and not verify_totp(secret, otp):
+        raise HTTPException(400, "Invalid MFA code")
+    write_setting("mfa_enabled", "0")
+    write_setting("mfa_secret", "")
+    write_setting("mfa_secret_pending", "")
+    return {"ok": True}
+
+
 @app.get("/api/dashboard")
-def dashboard() -> dict:
+def dashboard(_admin: str = Depends(require_admin)) -> dict:
     media = rows("SELECT * FROM media ORDER BY created_at DESC")
     playlists = rows("SELECT * FROM playlists ORDER BY created_at DESC")
     screens = rows("SELECT * FROM screens ORDER BY created_at DESC")
     for playlist in playlists:
         playlist["items"] = json.loads(playlist["items"])
+        playlist["transition_modes"] = normalize_transition_modes(playlist.get("transition_modes") or json.dumps([playlist.get("transition_mode") or "fade"]))
     now = int(time.time())
     for screen in screens:
         screen["online"] = bool(screen["last_seen"] and now - screen["last_seen"] < 90)
@@ -317,7 +627,7 @@ def dashboard() -> dict:
 
 
 @app.post("/api/media")
-def upload_media(file: UploadFile = File(...)) -> dict:
+def upload_media(file: UploadFile = File(...), _admin: str = Depends(require_admin)) -> dict:
     content_type = file.content_type or mimetypes.guess_type(file.filename or "")[0] or ""
     if content_type.startswith("image/"):
         kind = "image"
@@ -336,6 +646,9 @@ def upload_media(file: UploadFile = File(...)) -> dict:
     destination = UPLOADS / filename
     with destination.open("wb") as output:
         shutil.copyfileobj(file.file, output)
+    if destination.stat().st_size > MAX_UPLOAD_BYTES:
+        destination.unlink(missing_ok=True)
+        raise HTTPException(400, f"File is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit")
     with db() as conn:
         cursor = conn.execute(
             "INSERT INTO media(name, filename, kind, size, source_url, created_at) VALUES(?,?,?,?,?,?)",
@@ -346,7 +659,12 @@ def upload_media(file: UploadFile = File(...)) -> dict:
 
 
 @app.post("/api/library/url")
-def create_url_media(name: str = Form(...), kind: str = Form(...), source_url: str = Form(...)) -> dict:
+def create_url_media(
+    name: str = Form(...),
+    kind: str = Form(...),
+    source_url: str = Form(...),
+    _admin: str = Depends(require_admin),
+) -> dict:
     cleaned_kind = kind.strip().lower()
     if cleaned_kind not in URL_MEDIA_KINDS:
         raise HTTPException(400, "Unsupported source type")
@@ -362,7 +680,7 @@ def create_url_media(name: str = Form(...), kind: str = Form(...), source_url: s
 
 
 @app.delete("/api/media/{media_id}")
-def delete_media(media_id: int) -> dict:
+def delete_media(media_id: int, _admin: str = Depends(require_admin)) -> dict:
     result = rows("SELECT filename, source_url FROM media WHERE id=?", (media_id,))
     if not result:
         raise HTTPException(404, "Media not found")
@@ -381,11 +699,20 @@ def create_playlist(
     fit_mode: str = Form("contain"),
     transition_mode: str = Form("fade"),
     transition_modes: str = Form('["fade"]'),
+    _admin: str = Depends(require_admin),
 ) -> dict:
     try:
         parsed = json.loads(items)
     except json.JSONDecodeError as exc:
         raise HTTPException(400, "Invalid playlist") from exc
+    cleaned: list[dict] = []
+    for item in parsed:
+        media_id = int(item.get("media_id") or 0)
+        duration = max(2, int(item.get("duration") or 10))
+        if media_id:
+            cleaned.append({"media_id": media_id, "duration": duration})
+    if not cleaned:
+        raise HTTPException(400, "Playlist needs at least one item")
     cleaned_layout = normalize_layout_mode(layout_mode)
     cleaned_fit = normalize_fit_mode(fit_mode)
     cleaned_transition = normalize_transition_mode(transition_mode)
@@ -395,7 +722,7 @@ def create_playlist(
             "INSERT INTO playlists(name, items, layout_mode, fit_mode, transition_mode, transition_modes, created_at) VALUES(?,?,?,?,?,?,?)",
             (
                 name.strip() or "Untitled playlist",
-                json.dumps(parsed),
+                json.dumps(cleaned),
                 cleaned_layout,
                 cleaned_fit,
                 cleaned_transition,
@@ -415,6 +742,7 @@ def update_playlist(
     fit_mode: str = Form("contain"),
     transition_mode: str = Form("fade"),
     transition_modes: str = Form('["fade"]'),
+    _admin: str = Depends(require_admin),
 ) -> dict:
     try:
         parsed = json.loads(items)
@@ -451,7 +779,7 @@ def update_playlist(
 
 
 @app.delete("/api/playlists/{playlist_id}")
-def delete_playlist(playlist_id: int) -> dict:
+def delete_playlist(playlist_id: int, _admin: str = Depends(require_admin)) -> dict:
     with db() as conn:
         conn.execute("UPDATE screens SET playlist_id=NULL WHERE playlist_id=?", (playlist_id,))
         cursor = conn.execute("DELETE FROM playlists WHERE id=?", (playlist_id,))
@@ -464,18 +792,27 @@ def delete_playlist(playlist_id: int) -> dict:
 def create_screen(
     name: str = Form(...),
     orientation: str = Form("landscape"),
+    brand: str = Form("unknown"),
+    model: str = Form(""),
+    runtime: str = Form("browser"),
     ip_address: str = Form(""),
     notes: str = Form(""),
+    _admin: str = Depends(require_admin),
 ) -> dict:
     code = secrets.token_hex(3).upper()
     normalized_ip = normalize_ip_address(ip_address)
+    cleaned_brand = normalize_brand(brand)
+    cleaned_runtime = normalize_runtime(runtime)
     with db() as conn:
         cursor = conn.execute(
-            "INSERT INTO screens(name, code, orientation, ip_address, notes, created_at) VALUES(?,?,?,?,?,?)",
+            "INSERT INTO screens(name, code, orientation, brand, model, runtime, ip_address, notes, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
             (
                 name.strip() or "New screen",
                 code,
                 orientation,
+                cleaned_brand,
+                model.strip() or None,
+                cleaned_runtime,
                 normalized_ip,
                 notes.strip() or None,
                 int(time.time()),
@@ -485,12 +822,12 @@ def create_screen(
 
 
 @app.get("/api/network/discover")
-def network_discover() -> dict:
+def network_discover(_admin: str = Depends(require_admin)) -> dict:
     return {"devices": discover_network_devices()}
 
 
 @app.post("/api/screens/assign-many")
-def assign_many_screens(payload: dict) -> dict:
+def assign_many_screens(payload: dict, _admin: str = Depends(require_admin)) -> dict:
     screen_ids = [int(screen_id) for screen_id in payload.get("screen_ids", [])]
     playlist_id = int(payload.get("playlist_id") or 0)
     if not screen_ids:
@@ -506,9 +843,26 @@ def assign_many_screens(payload: dict) -> dict:
 
 
 @app.post("/api/screens/{screen_id}/assign")
-def assign_playlist(screen_id: int, playlist_id: int = Form(...)) -> dict:
+def assign_playlist(screen_id: int, playlist_id: int = Form(...), _admin: str = Depends(require_admin)) -> dict:
     with db() as conn:
         conn.execute("UPDATE screens SET playlist_id=? WHERE id=?", (playlist_id, screen_id))
+    return {"ok": True}
+
+
+@app.post("/api/screens/stop-many")
+def stop_many_screens(payload: dict, _admin: str = Depends(require_admin)) -> dict:
+    screen_ids = [int(screen_id) for screen_id in payload.get("screen_ids", [])]
+    if not screen_ids:
+        raise HTTPException(400, "Select at least one screen")
+    with db() as conn:
+        conn.executemany("UPDATE screens SET playlist_id=NULL WHERE id=?", [(screen_id,) for screen_id in screen_ids])
+    return {"ok": True, "updated": len(screen_ids)}
+
+
+@app.post("/api/screens/{screen_id}/stop")
+def stop_screen(screen_id: int, _admin: str = Depends(require_admin)) -> dict:
+    with db() as conn:
+        conn.execute("UPDATE screens SET playlist_id=NULL WHERE id=?", (screen_id,))
     return {"ok": True}
 
 
@@ -517,14 +871,29 @@ def update_screen(
     screen_id: int,
     name: str = Form(...),
     orientation: str = Form("landscape"),
+    brand: str = Form("unknown"),
+    model: str = Form(""),
+    runtime: str = Form("browser"),
     ip_address: str = Form(""),
     notes: str = Form(""),
+    _admin: str = Depends(require_admin),
 ) -> dict:
     normalized_ip = normalize_ip_address(ip_address)
+    cleaned_brand = normalize_brand(brand)
+    cleaned_runtime = normalize_runtime(runtime)
     with db() as conn:
         cursor = conn.execute(
-            "UPDATE screens SET name=?, orientation=?, ip_address=?, notes=? WHERE id=?",
-            (name.strip() or "Unnamed screen", orientation, normalized_ip, notes.strip() or None, screen_id),
+            "UPDATE screens SET name=?, orientation=?, brand=?, model=?, runtime=?, ip_address=?, notes=? WHERE id=?",
+            (
+                name.strip() or "Unnamed screen",
+                orientation,
+                cleaned_brand,
+                model.strip() or None,
+                cleaned_runtime,
+                normalized_ip,
+                notes.strip() or None,
+                screen_id,
+            ),
         )
         if cursor.rowcount == 0:
             raise HTTPException(404, "Screen not found")
@@ -532,7 +901,7 @@ def update_screen(
 
 
 @app.delete("/api/screens/{screen_id}")
-def delete_screen(screen_id: int) -> dict:
+def delete_screen(screen_id: int, _admin: str = Depends(require_admin)) -> dict:
     with db() as conn:
         cursor = conn.execute("DELETE FROM screens WHERE id=?", (screen_id,))
         if cursor.rowcount == 0:

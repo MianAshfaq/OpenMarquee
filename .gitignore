@@ -3,6 +3,8 @@ __pycache__/
 *.pyc
 .server.pid
 data/*.db
+data/*.txt
+data/.secret_key
 uploads/*
 !uploads/.gitkeep
 .env

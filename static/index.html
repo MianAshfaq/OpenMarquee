@@ -5,9 +5,29 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>OpenMarquee</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
+  <section id="auth-shell">
+    <div class="auth-card">
+      <div class="auth-brand">
+        <img class="brand-logo" src="/static/logo.svg" alt="OpenMarquee">
+        <div>
+          <strong>OpenMarquee Admin</strong>
+          <small>Secure digital signage control</small>
+        </div>
+      </div>
+      <h1>Admin sign in</h1>
+      <p id="bootstrap-note" class="auth-copy"></p>
+      <form id="auth-form" class="auth-form">
+        <div class="field"><label>Username</label><input id="auth-username" name="username" value="admin" required></div>
+        <div class="field"><label>Password</label><input name="password" type="password" value="admin@123" required></div>
+        <div class="field" id="auth-otp-row" style="display:none"><label>MFA code</label><input name="otp" inputmode="numeric" maxlength="6" placeholder="123456"></div>
+        <button class="primary auth-submit"><i class="fa-solid fa-lock"></i><span>Sign in</span></button>
+      </form>
+    </div>
+  </section>
   <aside class="sidebar">
     <div class="brand">
       <img class="brand-logo" src="/static/logo.svg" alt="OpenMarquee">
@@ -17,20 +37,20 @@
       </div>
     </div>
     <nav>
-      <button class="nav active" data-view="overview">Overview</button>
-      <button class="nav" data-view="library">Media library</button>
-      <button class="nav" data-view="playlists">Playlists</button>
-      <button class="nav" data-view="screens">Screens</button>
+      <button class="nav active" data-view="overview"><i class="fa-solid fa-chart-line"></i><span>Overview</span></button>
+      <button class="nav" data-view="library"><i class="fa-solid fa-photo-film"></i><span>Media library</span></button>
+      <button class="nav" data-view="playlists"><i class="fa-solid fa-list-ul"></i><span>Playlists</span></button>
+      <button class="nav" data-view="screens"><i class="fa-solid fa-tv"></i><span>Screens</span></button>
     </nav>
     <div class="sidebar-foot">
       <div><span class="pulse"></span> Self-hosted and ready</div>
       <div class="credits">
         <small>Created by Muhammad Ashfaq</small>
         <div class="credit-links">
-          <a href="https://github.com/MianAshfaq" target="_blank" rel="noreferrer">GitHub</a>
-          <a href="https://www.cyberoly.com/" target="_blank" rel="noreferrer">CyberOly</a>
-          <a href="https://www.linkedin.com/in/muhammad-ashfaq-0bba424a/" target="_blank" rel="noreferrer">LinkedIn</a>
-          <a href="https://www.facebook.com/MianAshfaq012" target="_blank" rel="noreferrer">Facebook</a>
+          <a href="https://github.com/MianAshfaq" target="_blank" rel="noreferrer"><i class="fa-brands fa-github"></i><span>GitHub</span></a>
+          <a href="https://www.cyberoly.com/" target="_blank" rel="noreferrer"><i class="fa-solid fa-globe"></i><span>CyberOly</span></a>
+          <a href="https://www.linkedin.com/in/muhammad-ashfaq-0bba424a/" target="_blank" rel="noreferrer"><i class="fa-brands fa-linkedin"></i><span>LinkedIn</span></a>
+          <a href="https://www.facebook.com/MianAshfaq012" target="_blank" rel="noreferrer"><i class="fa-brands fa-facebook"></i><span>Facebook</span></a>
         </div>
       </div>
     </div>
@@ -41,7 +61,13 @@
         <p class="eyebrow">DIGITAL SIGNAGE CONTROL</p>
         <h1 id="page-title">Digital signage at a glance</h1>
       </div>
-      <a class="icon-button" href="/player" target="_blank" title="Open player">Play</a>
+      <div class="header-actions">
+        <a class="icon-button" href="/player" target="_blank" title="Open player"><i class="fa-solid fa-up-right-from-square"></i><span>Player</span></a>
+        <button class="secondary" id="change-password"><i class="fa-solid fa-key"></i><span>Password</span></button>
+        <button class="secondary" id="mfa-button"><i class="fa-solid fa-shield-halved"></i><span id="mfa-state">MFA off</span></button>
+        <div class="session-pill"><i class="fa-solid fa-user-shield"></i><span id="session-user">admin</span></div>
+        <button class="secondary" id="logout-button"><i class="fa-solid fa-right-from-bracket"></i><span>Logout</span></button>
+      </div>
     </header>
 
     <section id="overview" class="view active-view">
@@ -88,10 +114,12 @@
       <div class="section-title">
         <div><p class="eyebrow">DEVICES</p><h2>Screens</h2></div>
         <div class="toolbar">
-          <button class="secondary" id="discover-screens">Discover on network</button>
-          <button class="secondary" id="assign-selected">Assign selected</button>
-          <button class="secondary" id="assign-all">Assign all</button>
-          <button class="primary" id="new-screen">Add screen</button>
+          <button class="secondary" id="discover-screens"><i class="fa-solid fa-wifi"></i><span>Discover</span></button>
+          <button class="secondary" id="assign-selected"><i class="fa-solid fa-play"></i><span>Assign selected</span></button>
+          <button class="secondary" id="stop-selected"><i class="fa-solid fa-stop"></i><span>Stop selected</span></button>
+          <button class="secondary" id="assign-all"><i class="fa-solid fa-bullhorn"></i><span>Assign all</span></button>
+          <button class="secondary" id="stop-all"><i class="fa-solid fa-power-off"></i><span>Stop all</span></button>
+          <button class="primary" id="new-screen"><i class="fa-solid fa-plus"></i><span>Add screen</span></button>
         </div>
       </div>
       <div class="selection-bar">
