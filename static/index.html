@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>OpenMarquee</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">
+      <img class="brand-logo" src="/static/logo.svg" alt="OpenMarquee">
+      <div>
+        <strong>OpenMarquee</strong>
+        <small>Open digital signage</small>
+      </div>
+    </div>
+    <nav>
+      <button class="nav active" data-view="overview">Overview</button>
+      <button class="nav" data-view="library">Media library</button>
+      <button class="nav" data-view="playlists">Playlists</button>
+      <button class="nav" data-view="screens">Screens</button>
+    </nav>
+    <div class="sidebar-foot"><span class="pulse"></span> Self-hosted and ready</div>
+  </aside>
+  <main>
+    <header>
+      <div>
+        <p class="eyebrow">DIGITAL SIGNAGE CONTROL</p>
+        <h1 id="page-title">Digital signage at a glance</h1>
+      </div>
+      <a class="icon-button" href="/player" target="_blank" title="Open player">Play</a>
+    </header>
+
+    <section id="overview" class="view active-view">
+      <div class="stats">
+        <article><span>Connected screens</span><strong id="screen-count">0</strong><small id="online-count">0 online now</small></article>
+        <article><span>Media assets</span><strong id="media-count">0</strong><small>Stored locally</small></article>
+        <article><span>Active playlists</span><strong id="playlist-count">0</strong><small>Ready to publish</small></article>
+      </div>
+      <div class="band">
+        <div>
+          <p class="eyebrow">QUICK START</p>
+          <h2>Manage every screen from one place</h2>
+          <p>Upload content, build playlists, discover screens on the network, and publish media to a single panel or your entire fleet.</p>
+        </div>
+        <button class="primary" data-go="screens">Manage screens</button>
+      </div>
+      <div class="section-title">
+        <div><p class="eyebrow">FLEET</p><h2>Screen activity</h2></div>
+        <button class="text-button" data-go="screens">Open fleet manager</button>
+      </div>
+      <div id="overview-screens" class="screen-grid"></div>
+    </section>
+
+    <section id="library" class="view">
+      <div class="section-title">
+        <div><p class="eyebrow">CONTENT</p><h2>Media library</h2></div>
+        <label class="primary">Add media<input id="file-input" type="file" accept="image/*,video/*" multiple hidden></label>
+      </div>
+      <div id="media-grid" class="media-grid"></div>
+    </section>
+
+    <section id="playlists" class="view">
+      <div class="section-title">
+        <div><p class="eyebrow">PROGRAMMING</p><h2>Playlists</h2></div>
+        <button class="primary" id="new-playlist">New playlist</button>
+      </div>
+      <div id="playlist-grid" class="list-grid"></div>
+    </section>
+
+    <section id="screens" class="view">
+      <div class="section-title">
+        <div><p class="eyebrow">DEVICES</p><h2>Screens</h2></div>
+        <div class="toolbar">
+          <button class="secondary" id="discover-screens">Discover on network</button>
+          <button class="secondary" id="assign-selected">Assign selected</button>
+          <button class="secondary" id="assign-all">Assign all</button>
+          <button class="primary" id="new-screen">Add screen</button>
+        </div>
+      </div>
+      <div class="selection-bar">
+        <label class="select-all"><input type="checkbox" id="select-all"> <span>Select all</span></label>
+        <strong id="selected-count">No screens selected</strong>
+      </div>
+      <div id="screen-grid" class="list-grid"></div>
+    </section>
+  </main>
+
+  <dialog id="modal">
+    <form method="dialog">
+      <button class="modal-close" value="cancel" type="submit">x</button>
+      <div id="modal-body"></div>
+    </form>
+  </dialog>
+  <div id="toast"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

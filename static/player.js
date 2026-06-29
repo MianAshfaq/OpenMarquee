@@ -1,0 +1,7 @@
+const pair=document.querySelector('#pair'),stage=document.querySelector('#stage'),form=document.querySelector('#pair-form'),input=document.querySelector('#code');let code=localStorage.getItem('openmarquee-code')||'',manifest=null,index=0,timer=null;
+input.value=code;
+form.onsubmit=e=>{e.preventDefault();code=input.value.trim().toUpperCase();if(code.length!==6)return;localStorage.setItem('openmarquee-code',code);sync(true)};
+async function sync(first=false){if(!code)return;try{const r=await fetch(`/api/player/${code}`,{cache:'no-store'});if(!r.ok)throw new Error();const next=await r.json();manifest=next;pair.style.display='none';stage.style.display='block';if(first||!stage.children.length)play(0)}catch{if(first){localStorage.removeItem('openmarquee-code');code='';pair.style.display='grid';stage.style.display='none';input.value='';input.placeholder='INVALID'}}}
+function play(i){clearTimeout(timer);index=i;if(!manifest?.items?.length){stage.innerHTML='<div class="message"><strong>Screen connected</strong><span>Assign a playlist from the LumaRelay dashboard.</span></div>';timer=setTimeout(()=>sync(false),10000);return}const item=manifest.items[index%manifest.items.length];stage.innerHTML='';const el=document.createElement(item.kind==='video'?'video':'img');el.src=item.url;if(item.kind==='video'){el.autoplay=true;el.muted=true;el.playsInline=true;el.onended=next;el.onerror=next}else{timer=setTimeout(next,item.duration*1000)}stage.appendChild(el)}
+function next(){play((index+1)%manifest.items.length)}
+if(code)sync(true);setInterval(()=>sync(false),30000);

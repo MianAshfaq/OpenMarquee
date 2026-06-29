@@ -1,0 +1,394 @@
+let state = { media: [], playlists: [], screens: [] };
+const selectedScreens = new Set();
+
+const $ = (selector) => document.querySelector(selector);
+const $$ = (selector) => [...document.querySelectorAll(selector)];
+
+const api = async (url, options = {}) => {
+  const response = await fetch(url, options);
+  if (!response.ok) {
+    let detail = "Request failed";
+    try {
+      detail = (await response.json()).detail || detail;
+    } catch {}
+    throw new Error(detail);
+  }
+  return response.json();
+};
+
+function toast(message) {
+  const el = $("#toast");
+  el.textContent = message;
+  el.classList.add("show");
+  setTimeout(() => el.classList.remove("show"), 2400);
+}
+
+function bytes(value) {
+  return value > 1048576 ? `${(value / 1048576).toFixed(1)} MB` : `${Math.ceil(value / 1024)} KB`;
+}
+
+function escapeHtml(value) {
+  const el = document.createElement("div");
+  el.textContent = value ?? "";
+  return el.innerHTML;
+}
+
+function selectedScreenList() {
+  return state.screens.filter((screen) => selectedScreens.has(screen.id));
+}
+
+async function refresh() {
+  state = await api("/api/dashboard");
+  for (const id of [...selectedScreens]) {
+    if (!state.screens.some((screen) => screen.id === id)) selectedScreens.delete(id);
+  }
+  render();
+}
+
+function screenPlaylistName(screen) {
+  const playlist = state.playlists.find((item) => item.id === screen.playlist_id);
+  return playlist ? playlist.name : "No playlist assigned";
+}
+
+function screenMeta(screen) {
+  const parts = [
+    `Pairing code: <strong>${screen.code}</strong>`,
+    `Orientation: ${escapeHtml(screen.orientation)}`,
+    screen.ip_address ? `IP: ${escapeHtml(screen.ip_address)}` : "IP: Not saved",
+    `Playlist: ${escapeHtml(screenPlaylistName(screen))}`,
+  ];
+  if (screen.notes) parts.push(`Notes: ${escapeHtml(screen.notes)}`);
+  return parts.join("<br>");
+}
+
+function overviewScreenCard(screen) {
+  return `
+    <article class="card">
+      <div class="card-body">
+        <div class="badge-row">
+          <span class="badge ${screen.online ? "online" : "offline"}">${escapeHtml(screen.player_status_label)}</span>
+          <span class="badge ${networkBadgeClass(screen)}">${escapeHtml(screen.network_status_label)}</span>
+        </div>
+        <h3>${escapeHtml(screen.name)}</h3>
+        <p>${screenMeta(screen)}</p>
+        <div class="card-actions">
+          <button class="secondary" onclick="assignOne(${screen.id})">Assign playlist</button>
+          <button class="secondary" onclick="editScreen(${screen.id})">Edit</button>
+        </div>
+      </div>
+    </article>
+  `;
+}
+
+function fleetScreenCard(screen) {
+  return `
+    <article class="card">
+      <div class="card-body">
+        <label class="screen-select">
+          <input type="checkbox" ${selectedScreens.has(screen.id) ? "checked" : ""} onchange="toggleScreenSelection(${screen.id}, this.checked)">
+          <span>Select</span>
+        </label>
+        <div class="badge-row">
+          <span class="badge ${screen.online ? "online" : "offline"}">${escapeHtml(screen.player_status_label)}</span>
+          <span class="badge ${networkBadgeClass(screen)}">${escapeHtml(screen.network_status_label)}</span>
+        </div>
+        <h3>${escapeHtml(screen.name)}</h3>
+        <p>${screenMeta(screen)}</p>
+        <div class="card-actions">
+          <button class="secondary" onclick="assignOne(${screen.id})">Assign</button>
+          <button class="secondary" onclick="editScreen(${screen.id})">Edit</button>
+          <button class="secondary danger" onclick="deleteScreen(${screen.id})">Delete</button>
+        </div>
+      </div>
+    </article>
+  `;
+}
+
+function mediaCard(media) {
+  const preview = media.kind === "video"
+    ? `<video src="/media/${media.filename}" muted></video>`
+    : `<img src="/media/${media.filename}" alt="">`;
+  return `
+    <article class="card">
+      <div class="media-preview">${preview}</div>
+      <div class="card-body">
+        <h3>${escapeHtml(media.name)}</h3>
+        <p>${media.kind} · ${bytes(media.size)}</p>
+        <button class="secondary danger" onclick="removeMedia(${media.id})">Delete</button>
+      </div>
+    </article>
+  `;
+}
+
+function playlistCard(playlist) {
+  const duration = playlist.items.reduce((total, item) => total + Number(item.duration || 10), 0);
+  return `
+    <article class="card">
+      <div class="card-body">
+        <span class="badge">${playlist.items.length} items</span>
+        <h3>${escapeHtml(playlist.name)}</h3>
+        <p>${duration} seconds per loop</p>
+      </div>
+    </article>
+  `;
+}
+
+function networkBadgeClass(screen) {
+  if (screen.network_status === "reachable") return "network-ok";
+  if (screen.network_status === "invalid_ip") return "network-warn";
+  return "offline";
+}
+
+function renderSelectionState() {
+  const count = selectedScreens.size;
+  $("#selected-count").textContent = count ? `${count} selected` : "No screens selected";
+  $("#select-all").checked = !!state.screens.length && count === state.screens.length;
+}
+
+function render() {
+  $("#screen-count").textContent = state.screens.length;
+  $("#online-count").textContent = `${state.screens.filter((screen) => screen.online).length} online now`;
+  $("#media-count").textContent = state.media.length;
+  $("#playlist-count").textContent = state.playlists.length;
+
+  $("#overview-screens").innerHTML = state.screens.map(overviewScreenCard).join("") || '<p class="empty">No screens paired yet.</p>';
+  $("#screen-grid").innerHTML = state.screens.map(fleetScreenCard).join("") || '<p class="empty">No screens added yet. Start with manual entry or network discovery.</p>';
+  $("#media-grid").innerHTML = state.media.map(mediaCard).join("") || '<p class="empty">Your library is ready for its first image or video.</p>';
+  $("#playlist-grid").innerHTML = state.playlists.map(playlistCard).join("") || '<p class="empty">Create a playlist after uploading media.</p>';
+  renderSelectionState();
+}
+
+function go(view) {
+  $$(".nav").forEach((item) => item.classList.toggle("active", item.dataset.view === view));
+  $$(".view").forEach((item) => item.classList.toggle("active-view", item.id === view));
+  $("#page-title").textContent = {
+    overview: "Digital signage at a glance",
+    library: "Your content library",
+    playlists: "Playlist programming",
+    screens: "Your screen fleet",
+  }[view];
+}
+
+async function showModal(html, onSubmit) {
+  const dialog = $("#modal");
+  $("#modal-body").innerHTML = html;
+  dialog.showModal();
+  dialog.querySelector("form").onsubmit = async (event) => {
+    if (event.submitter?.value === "cancel") return;
+    event.preventDefault();
+    try {
+      await onSubmit(new FormData(event.target));
+      dialog.close();
+    } catch (error) {
+      toast(error.message);
+    }
+  };
+}
+
+function playlistOptions(selected = "") {
+  return state.playlists.map((playlist) => `<option value="${playlist.id}" ${String(playlist.id) === String(selected) ? "selected" : ""}>${escapeHtml(playlist.name)}</option>`).join("");
+}
+
+function screenForm(screen = null) {
+  const isEdit = !!screen;
+  return `
+    <p class="eyebrow">${isEdit ? "EDIT DEVICE" : "NEW DEVICE"}</p>
+    <h2>${isEdit ? "Update screen" : "Add a screen"}</h2>
+    <div class="field"><label>Screen name</label><input name="name" placeholder="Reception TV" value="${escapeHtml(screen?.name || "")}" required></div>
+    <div class="field"><label>IP address</label><input name="ip_address" placeholder="192.168.1.20" value="${escapeHtml(screen?.ip_address || "")}"></div>
+    <p class="helper-text">Use the real screen or player IP. OpenMarquee now checks network reachability separately from the paired signage player connection.</p>
+    <div class="field"><label>Orientation</label><select name="orientation"><option value="landscape" ${screen?.orientation !== "portrait" ? "selected" : ""}>Landscape</option><option value="portrait" ${screen?.orientation === "portrait" ? "selected" : ""}>Portrait</option></select></div>
+    <div class="field"><label>Notes</label><input name="notes" placeholder="Lobby Samsung panel" value="${escapeHtml(screen?.notes || "")}"></div>
+    <div class="modal-footer"><button class="secondary" value="cancel">Cancel</button><button class="primary">${isEdit ? "Save changes" : "Create screen"}</button></div>
+  `;
+}
+
+function openCreateScreen() {
+  showModal(screenForm(), async (formData) => {
+    const result = await api("/api/screens", { method: "POST", body: formData });
+    toast(`Screen created. Pairing code ${result.code}`);
+    await refresh();
+  });
+}
+
+window.editScreen = async (screenId) => {
+  const screen = state.screens.find((item) => item.id === screenId);
+  if (!screen) return;
+  await showModal(screenForm(screen), async (formData) => {
+    await api(`/api/screens/${screenId}`, { method: "PUT", body: formData });
+    toast("Screen updated");
+    await refresh();
+  });
+};
+
+window.deleteScreen = async (screenId) => {
+  const screen = state.screens.find((item) => item.id === screenId);
+  if (!screen) return;
+  if (!confirm(`Delete ${screen.name}?`)) return;
+  await api(`/api/screens/${screenId}`, { method: "DELETE" });
+  selectedScreens.delete(screenId);
+  toast("Screen removed");
+  await refresh();
+};
+
+function openPlaylistBuilder() {
+  if (!state.media.length) {
+    toast("Upload media first");
+    go("library");
+    return;
+  }
+  showModal(`
+    <p class="eyebrow">NEW PLAYLIST</p>
+    <h2>Build a playlist</h2>
+    <div class="field"><label>Playlist name</label><input name="name" placeholder="Morning announcements" required></div>
+    <div class="field"><label>Choose content</label><div class="picker">${state.media.map((media) => `<label class="pick"><input type="checkbox" name="media" value="${media.id}"><span>${escapeHtml(media.name)}</span></label>`).join("")}</div></div>
+    <div class="field"><label>Image duration (seconds)</label><input name="duration" type="number" min="2" value="10"></div>
+    <div class="modal-footer"><button class="secondary" value="cancel">Cancel</button><button class="primary">Create playlist</button></div>
+  `, async (formData) => {
+    const ids = formData.getAll("media");
+    if (!ids.length) throw new Error("Select at least one item");
+    const payload = new FormData();
+    payload.set("name", formData.get("name"));
+    payload.set("items", JSON.stringify(ids.map((id) => ({ media_id: Number(id), duration: Number(formData.get("duration")) }))));
+    await api("/api/playlists", { method: "POST", body: payload });
+    toast("Playlist created");
+    await refresh();
+  });
+}
+
+window.assignOne = async (screenId) => {
+  if (!state.playlists.length) {
+    toast("Create a playlist first");
+    go("playlists");
+    return;
+  }
+  await showModal(`
+    <p class="eyebrow">PUBLISH</p>
+    <h2>Assign playlist</h2>
+    <div class="field"><label>Playlist</label><select name="playlist_id">${playlistOptions()}</select></div>
+    <div class="modal-footer"><button class="secondary" value="cancel">Cancel</button><button class="primary">Publish</button></div>
+  `, async (formData) => {
+    await api(`/api/screens/${screenId}/assign`, { method: "POST", body: formData });
+    toast("Playlist published");
+    await refresh();
+  });
+};
+
+function openBulkAssign(allScreens = false) {
+  if (!state.playlists.length) {
+    toast("Create a playlist first");
+    go("playlists");
+    return;
+  }
+  const targetScreens = allScreens ? state.screens : selectedScreenList();
+  if (!targetScreens.length) {
+    toast("Select screens first");
+    return;
+  }
+  showModal(`
+    <p class="eyebrow">BULK PUBLISH</p>
+    <h2>Assign playlist to ${targetScreens.length} screen${targetScreens.length === 1 ? "" : "s"}</h2>
+    <div class="stack-note">${targetScreens.map((screen) => escapeHtml(screen.name)).join(" · ")}</div>
+    <div class="field"><label>Playlist</label><select name="playlist_id">${playlistOptions()}</select></div>
+    <div class="modal-footer"><button class="secondary" value="cancel">Cancel</button><button class="primary">Publish</button></div>
+  `, async (formData) => {
+    await api("/api/screens/assign-many", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ screen_ids: targetScreens.map((screen) => screen.id), playlist_id: Number(formData.get("playlist_id")) }),
+    });
+    toast(`Playlist published to ${targetScreens.length} screen${targetScreens.length === 1 ? "" : "s"}`);
+    await refresh();
+  });
+}
+
+async function openDiscovery() {
+  $("#discover-screens").disabled = true;
+  try {
+    const result = await api("/api/network/discover");
+    const devices = result.devices || [];
+    await showModal(`
+      <p class="eyebrow">NETWORK DISCOVERY</p>
+      <h2>Visible devices on this network</h2>
+      <p class="modal-copy">OpenMarquee lists devices your computer can currently see through the local ARP table. Add the ones you want to manage.</p>
+      <div class="discover-list">
+        ${devices.length ? devices.map((device) => `
+          <label class="discover-row">
+            <input type="checkbox" name="device" value="${escapeHtml(device.ip_address)}|${escapeHtml(device.hostname || "")}">
+            <span>
+              <strong>${escapeHtml(device.hostname || "Unknown device")}</strong>
+              <small>${escapeHtml(device.ip_address)} · ${escapeHtml(device.mac_address)}</small>
+            </span>
+            <em>${device.already_added ? "Already added" : "Available"}</em>
+          </label>
+        `).join("") : '<p class="empty">No visible devices were found. You can still add screens manually by name or IP.</p>'}
+      </div>
+      <div class="modal-footer"><button class="secondary" value="cancel">Close</button><button class="primary">Add selected</button></div>
+    `, async (formData) => {
+      const selections = formData.getAll("device").map((value) => String(value).split("|"));
+      const available = selections.filter(([ip]) => !state.screens.some((screen) => screen.ip_address === ip));
+      if (!available.length) throw new Error("Select at least one new device");
+      for (const [ip, hostname] of available) {
+        const payload = new FormData();
+        payload.set("name", hostname || `Screen ${ip}`);
+        payload.set("ip_address", ip);
+        payload.set("orientation", "landscape");
+        payload.set("notes", "Added from network discovery");
+        await api("/api/screens", { method: "POST", body: payload });
+      }
+      toast(`${available.length} screen${available.length === 1 ? "" : "s"} added`);
+      await refresh();
+    });
+  } finally {
+    $("#discover-screens").disabled = false;
+  }
+}
+
+window.toggleScreenSelection = (screenId, checked) => {
+  if (checked) selectedScreens.add(screenId);
+  else selectedScreens.delete(screenId);
+  renderSelectionState();
+};
+
+window.removeMedia = async (mediaId) => {
+  if (!confirm("Delete this media file?")) return;
+  await api(`/api/media/${mediaId}`, { method: "DELETE" });
+  await refresh();
+};
+
+$$(".nav").forEach((item) => {
+  item.onclick = () => go(item.dataset.view);
+});
+
+$$("[data-go]").forEach((item) => {
+  item.onclick = () => go(item.dataset.go);
+});
+
+$("#file-input").onchange = async (event) => {
+  for (const file of event.target.files) {
+    const formData = new FormData();
+    formData.append("file", file);
+    try {
+      await api("/api/media", { method: "POST", body: formData });
+      toast(`${file.name} uploaded`);
+    } catch (error) {
+      toast(error.message);
+    }
+  }
+  event.target.value = "";
+  await refresh();
+};
+
+$("#new-screen").onclick = openCreateScreen;
+$("#new-playlist").onclick = openPlaylistBuilder;
+$("#discover-screens").onclick = openDiscovery;
+$("#assign-selected").onclick = () => openBulkAssign(false);
+$("#assign-all").onclick = () => openBulkAssign(true);
+$("#select-all").onchange = (event) => {
+  if (event.target.checked) state.screens.forEach((screen) => selectedScreens.add(screen.id));
+  else selectedScreens.clear();
+  render();
+};
+
+refresh().catch((error) => toast(error.message));
+setInterval(() => refresh().catch(() => {}), 30000);
