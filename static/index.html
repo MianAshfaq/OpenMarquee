@@ -57,7 +57,10 @@
     <section id="library" class="view">
       <div class="section-title">
         <div><p class="eyebrow">CONTENT</p><h2>Media library</h2></div>
-        <label class="primary">Add media<input id="file-input" type="file" accept="image/*,video/*" multiple hidden></label>
+        <div class="toolbar">
+          <button class="secondary" id="new-source">Add source</button>
+          <label class="primary">Add media<input id="file-input" type="file" accept="image/*,video/*,application/pdf,audio/*,text/html" multiple hidden></label>
+        </div>
       </div>
       <div id="media-grid" class="media-grid"></div>
     </section>

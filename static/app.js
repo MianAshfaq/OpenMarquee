@@ -33,8 +33,35 @@ function escapeHtml(value) {
   return el.innerHTML;
 }
 
+function mediaTypeLabel(kind) {
+  return {
+    image: "Image / GIF",
+    video: "Video",
+    pdf: "PDF",
+    html: "HTML",
+    audio: "Audio",
+    webpage: "Web page",
+    dashboard: "Dashboard URL",
+    youtube: "YouTube",
+    rss: "RSS feed",
+    stream: "Live stream",
+    iptv: "IPTV",
+    powerpoint: "PowerPoint URL",
+    excel: "Excel chart URL",
+  }[kind] || kind;
+}
+
 function selectedScreenList() {
   return state.screens.filter((screen) => selectedScreens.has(screen.id));
+}
+
+function mediaById(mediaId) {
+  return state.media.find((item) => item.id === Number(mediaId));
+}
+
+function screenPlaylistName(screen) {
+  const playlist = state.playlists.find((item) => item.id === screen.playlist_id);
+  return playlist ? playlist.name : "No playlist assigned";
 }
 
 async function refresh() {
@@ -43,11 +70,6 @@ async function refresh() {
     if (!state.screens.some((screen) => screen.id === id)) selectedScreens.delete(id);
   }
   render();
-}
-
-function screenPlaylistName(screen) {
-  const playlist = state.playlists.find((item) => item.id === screen.playlist_id);
-  return playlist ? playlist.name : "No playlist assigned";
 }
 
 function screenMeta(screen) {
@@ -59,6 +81,12 @@ function screenMeta(screen) {
   ];
   if (screen.notes) parts.push(`Notes: ${escapeHtml(screen.notes)}`);
   return parts.join("<br>");
+}
+
+function networkBadgeClass(screen) {
+  if (screen.network_status === "reachable") return "network-ok";
+  if (screen.network_status === "invalid_ip") return "network-warn";
+  return "offline";
 }
 
 function overviewScreenCard(screen) {
@@ -105,15 +133,19 @@ function fleetScreenCard(screen) {
 }
 
 function mediaCard(media) {
+  const mediaUrl = media.source_url || `/media/${media.filename}`;
   const preview = media.kind === "video"
-    ? `<video src="/media/${media.filename}" muted></video>`
-    : `<img src="/media/${media.filename}" alt="">`;
+    ? `<video src="${escapeHtml(mediaUrl)}" muted></video>`
+    : media.kind === "image"
+      ? `<img src="${escapeHtml(mediaUrl)}" alt="">`
+      : `<div class="media-type-tile"><strong>${escapeHtml(mediaTypeLabel(media.kind))}</strong><span>${media.source_url ? "URL source" : "Uploaded asset"}</span></div>`;
+
   return `
     <article class="card">
       <div class="media-preview">${preview}</div>
       <div class="card-body">
         <h3>${escapeHtml(media.name)}</h3>
-        <p>${media.kind} · ${bytes(media.size)}</p>
+        <p>${escapeHtml(mediaTypeLabel(media.kind))} · ${media.size ? bytes(media.size) : "Remote source"}</p>
         <button class="secondary danger" onclick="removeMedia(${media.id})">Delete</button>
       </div>
     </article>
@@ -128,15 +160,12 @@ function playlistCard(playlist) {
         <span class="badge">${playlist.items.length} items</span>
         <h3>${escapeHtml(playlist.name)}</h3>
         <p>${duration} seconds per loop</p>
+        <div class="card-actions">
+          <button class="secondary" onclick="editPlaylist(${playlist.id})">Edit timing</button>
+        </div>
       </div>
     </article>
   `;
-}
-
-function networkBadgeClass(screen) {
-  if (screen.network_status === "reachable") return "network-ok";
-  if (screen.network_status === "invalid_ip") return "network-warn";
-  return "offline";
 }
 
 function renderSelectionState() {
@@ -153,8 +182,8 @@ function render() {
 
   $("#overview-screens").innerHTML = state.screens.map(overviewScreenCard).join("") || '<p class="empty">No screens paired yet.</p>';
   $("#screen-grid").innerHTML = state.screens.map(fleetScreenCard).join("") || '<p class="empty">No screens added yet. Start with manual entry or network discovery.</p>';
-  $("#media-grid").innerHTML = state.media.map(mediaCard).join("") || '<p class="empty">Your library is ready for its first image or video.</p>';
-  $("#playlist-grid").innerHTML = state.playlists.map(playlistCard).join("") || '<p class="empty">Create a playlist after uploading media.</p>';
+  $("#media-grid").innerHTML = state.media.map(mediaCard).join("") || '<p class="empty">Your library is ready for its first asset or live source.</p>';
+  $("#playlist-grid").innerHTML = state.playlists.map(playlistCard).join("") || '<p class="empty">Create a playlist after uploading media or adding a source.</p>';
   renderSelectionState();
 }
 
@@ -196,10 +225,45 @@ function screenForm(screen = null) {
     <h2>${isEdit ? "Update screen" : "Add a screen"}</h2>
     <div class="field"><label>Screen name</label><input name="name" placeholder="Reception TV" value="${escapeHtml(screen?.name || "")}" required></div>
     <div class="field"><label>IP address</label><input name="ip_address" placeholder="192.168.1.20" value="${escapeHtml(screen?.ip_address || "")}"></div>
-    <p class="helper-text">Use the real screen or player IP. OpenMarquee now checks network reachability separately from the paired signage player connection.</p>
+    <p class="helper-text">Use the real screen or player IP. OpenMarquee checks network reachability separately from the signage player connection.</p>
     <div class="field"><label>Orientation</label><select name="orientation"><option value="landscape" ${screen?.orientation !== "portrait" ? "selected" : ""}>Landscape</option><option value="portrait" ${screen?.orientation === "portrait" ? "selected" : ""}>Portrait</option></select></div>
     <div class="field"><label>Notes</label><input name="notes" placeholder="Lobby Samsung panel" value="${escapeHtml(screen?.notes || "")}"></div>
     <div class="modal-footer"><button class="secondary" value="cancel">Cancel</button><button class="primary">${isEdit ? "Save changes" : "Create screen"}</button></div>
+  `;
+}
+
+function playlistEditorMarkup(playlist) {
+  const rows = playlist.items.map((item, itemIndex) => {
+    const media = mediaById(item.media_id);
+    return `
+      <div class="playlist-item-row">
+        <div class="playlist-item-copy">
+          <strong>${escapeHtml(media?.name || `Media ${item.media_id}`)}</strong>
+          <small>${escapeHtml(mediaTypeLabel(media?.kind || "media item"))}</small>
+        </div>
+        <label class="playlist-duration-field">
+          <span>Seconds</span>
+          <input type="number" min="2" name="duration_${itemIndex}" value="${Number(item.duration || 10)}">
+        </label>
+        <input type="hidden" name="media_id_${itemIndex}" value="${Number(item.media_id)}">
+      </div>
+    `;
+  }).join("");
+
+  return `
+    <p class="eyebrow">PLAYLIST TIMING</p>
+    <h2>Edit playlist</h2>
+    <div class="field"><label>Playlist name</label><input name="name" value="${escapeHtml(playlist.name)}" required></div>
+    <div class="playlist-tools">
+      <label class="playlist-apply-all">
+        <span>Set all items to</span>
+        <input type="number" min="2" id="apply-all-duration" value="10">
+        <span>seconds</span>
+      </label>
+      <button class="secondary" type="button" id="apply-all-button">Apply to all</button>
+    </div>
+    <div class="playlist-item-list">${rows}</div>
+    <div class="modal-footer"><button class="secondary" value="cancel">Cancel</button><button class="primary">Save playlist</button></div>
   `;
 }
 
@@ -211,10 +275,63 @@ function openCreateScreen() {
   });
 }
 
+function openPlaylistBuilder() {
+  if (!state.media.length) {
+    toast("Add media or a source first");
+    go("library");
+    return;
+  }
+  showModal(`
+    <p class="eyebrow">NEW PLAYLIST</p>
+    <h2>Build a playlist</h2>
+    <div class="field"><label>Playlist name</label><input name="name" placeholder="Morning announcements" required></div>
+    <div class="field"><label>Choose content</label><div class="picker">${state.media.map((media) => `<label class="pick"><input type="checkbox" name="media" value="${media.id}"><span>${escapeHtml(media.name)}</span></label>`).join("")}</div></div>
+    <div class="field"><label>Default duration (seconds)</label><input name="duration" type="number" min="2" value="10"></div>
+    <div class="modal-footer"><button class="secondary" value="cancel">Cancel</button><button class="primary">Create playlist</button></div>
+  `, async (formData) => {
+    const ids = formData.getAll("media");
+    if (!ids.length) throw new Error("Select at least one item");
+    const payload = new FormData();
+    payload.set("name", formData.get("name"));
+    payload.set("items", JSON.stringify(ids.map((id) => ({ media_id: Number(id), duration: Number(formData.get("duration")) }))));
+    await api("/api/playlists", { method: "POST", body: payload });
+    toast("Playlist created");
+    await refresh();
+  });
+}
+
+function openSourceBuilder() {
+  showModal(`
+    <p class="eyebrow">NEW SOURCE</p>
+    <h2>Add a web or stream source</h2>
+    <div class="field"><label>Display name</label><input name="name" placeholder="Reception dashboard" required></div>
+    <div class="field"><label>Source type</label><select name="kind">
+      <option value="webpage">Web Page</option>
+      <option value="dashboard">Dashboard URL</option>
+      <option value="youtube">YouTube</option>
+      <option value="rss">RSS Feed</option>
+      <option value="stream">Live Stream</option>
+      <option value="iptv">IPTV</option>
+      <option value="powerpoint">PowerPoint URL</option>
+      <option value="excel">Excel Chart URL</option>
+      <option value="pdf">PDF URL</option>
+      <option value="audio">Audio URL</option>
+      <option value="html">Hosted HTML</option>
+    </select></div>
+    <div class="field"><label>URL</label><input name="source_url" placeholder="https://..." required></div>
+    <p class="helper-text">Use direct or embeddable links for dashboards, widgets, live channels, presentations, and web content.</p>
+    <div class="modal-footer"><button class="secondary" value="cancel">Cancel</button><button class="primary">Add source</button></div>
+  `, async (formData) => {
+    await api("/api/library/url", { method: "POST", body: formData });
+    toast("Source added");
+    await refresh();
+  });
+}
+
 window.editScreen = async (screenId) => {
   const screen = state.screens.find((item) => item.id === screenId);
   if (!screen) return;
-  await showModal(screenForm(screen), async (formData) => {
+  showModal(screenForm(screen), async (formData) => {
     await api(`/api/screens/${screenId}`, { method: "PUT", body: formData });
     toast("Screen updated");
     await refresh();
@@ -231,30 +348,34 @@ window.deleteScreen = async (screenId) => {
   await refresh();
 };
 
-function openPlaylistBuilder() {
-  if (!state.media.length) {
-    toast("Upload media first");
-    go("library");
-    return;
-  }
-  showModal(`
-    <p class="eyebrow">NEW PLAYLIST</p>
-    <h2>Build a playlist</h2>
-    <div class="field"><label>Playlist name</label><input name="name" placeholder="Morning announcements" required></div>
-    <div class="field"><label>Choose content</label><div class="picker">${state.media.map((media) => `<label class="pick"><input type="checkbox" name="media" value="${media.id}"><span>${escapeHtml(media.name)}</span></label>`).join("")}</div></div>
-    <div class="field"><label>Image duration (seconds)</label><input name="duration" type="number" min="2" value="10"></div>
-    <div class="modal-footer"><button class="secondary" value="cancel">Cancel</button><button class="primary">Create playlist</button></div>
-  `, async (formData) => {
-    const ids = formData.getAll("media");
-    if (!ids.length) throw new Error("Select at least one item");
+window.editPlaylist = async (playlistId) => {
+  const playlist = state.playlists.find((item) => item.id === playlistId);
+  if (!playlist) return;
+
+  showModal(playlistEditorMarkup(playlist), async (formData) => {
+    const items = playlist.items.map((item, itemIndex) => ({
+      media_id: Number(formData.get(`media_id_${itemIndex}`)),
+      duration: Number(formData.get(`duration_${itemIndex}`) || item.duration || 10),
+    }));
     const payload = new FormData();
     payload.set("name", formData.get("name"));
-    payload.set("items", JSON.stringify(ids.map((id) => ({ media_id: Number(id), duration: Number(formData.get("duration")) }))));
-    await api("/api/playlists", { method: "POST", body: payload });
-    toast("Playlist created");
+    payload.set("items", JSON.stringify(items));
+    await api(`/api/playlists/${playlistId}`, { method: "PUT", body: payload });
+    toast("Playlist timing updated");
     await refresh();
   });
-}
+
+  const applyButton = $("#apply-all-button");
+  const applyInput = $("#apply-all-duration");
+  if (applyButton && applyInput) {
+    applyButton.onclick = () => {
+      const nextValue = Math.max(2, Number(applyInput.value || 10));
+      $$(".playlist-duration-field input").forEach((inputEl) => {
+        inputEl.value = String(nextValue);
+      });
+    };
+  }
+};
 
 window.assignOne = async (screenId) => {
   if (!state.playlists.length) {
@@ -262,7 +383,7 @@ window.assignOne = async (screenId) => {
     go("playlists");
     return;
   }
-  await showModal(`
+  showModal(`
     <p class="eyebrow">PUBLISH</p>
     <h2>Assign playlist</h2>
     <div class="field"><label>Playlist</label><select name="playlist_id">${playlistOptions()}</select></div>
@@ -307,7 +428,7 @@ async function openDiscovery() {
   try {
     const result = await api("/api/network/discover");
     const devices = result.devices || [];
-    await showModal(`
+    showModal(`
       <p class="eyebrow">NETWORK DISCOVERY</p>
       <h2>Visible devices on this network</h2>
       <p class="modal-copy">OpenMarquee lists devices your computer can currently see through the local ARP table. Add the ones you want to manage.</p>
@@ -381,6 +502,7 @@ $("#file-input").onchange = async (event) => {
 
 $("#new-screen").onclick = openCreateScreen;
 $("#new-playlist").onclick = openPlaylistBuilder;
+$("#new-source").onclick = openSourceBuilder;
 $("#discover-screens").onclick = openDiscovery;
 $("#assign-selected").onclick = () => openBulkAssign(false);
 $("#assign-all").onclick = () => openBulkAssign(true);

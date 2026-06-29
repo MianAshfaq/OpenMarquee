@@ -154,6 +154,20 @@ button,.primary{font:inherit;cursor:pointer}
 .card p,.empty,.modal-copy,.stack-note{color:var(--muted);font-size:13px;line-height:1.55}
 .media-preview{height:170px;background:var(--sand);display:grid;place-items:center;overflow:hidden}
 .media-preview img,.media-preview video{width:100%;height:100%;object-fit:cover}
+.media-type-tile{
+  width:100%;
+  height:100%;
+  padding:18px;
+  display:grid;
+  align-content:end;
+  gap:6px;
+  background:
+    radial-gradient(circle at top right, rgba(214,242,106,.35), transparent 20%),
+    linear-gradient(135deg, #1a2c23 0%, #0e1714 100%);
+  color:#fff;
+}
+.media-type-tile strong{font-size:18px}
+.media-type-tile span{font-size:12px;color:#b8c5be}
 .badge{
   display:inline-flex;
   align-items:center;
@@ -199,6 +213,61 @@ dialog form{padding:28px;position:relative}
   background:#fff;
 }
 .helper-text{margin:0;color:var(--muted);font-size:12px;line-height:1.5}
+.playlist-tools{
+  display:flex;
+  flex-wrap:wrap;
+  gap:10px;
+  align-items:center;
+  justify-content:space-between;
+  margin:16px 0;
+  padding:14px;
+  background:#f7faf5;
+  border:1px solid var(--line);
+  border-radius:8px;
+}
+.playlist-apply-all{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  color:var(--muted);
+  font-size:13px;
+}
+.playlist-apply-all input{
+  width:88px;
+  padding:10px;
+  border:1px solid #cfd8d1;
+  border-radius:8px;
+  font:inherit;
+}
+.playlist-item-list{display:grid;gap:10px}
+.playlist-item-row{
+  display:grid;
+  grid-template-columns:minmax(0,1fr) auto;
+  gap:12px;
+  align-items:center;
+  padding:12px 14px;
+  background:#fff;
+  border:1px solid var(--line);
+  border-radius:8px;
+}
+.playlist-item-copy strong,.playlist-item-copy small{display:block}
+.playlist-item-copy small{color:var(--muted);font-size:12px;margin-top:4px}
+.playlist-duration-field{
+  display:grid;
+  gap:6px;
+  min-width:110px;
+}
+.playlist-duration-field span{
+  color:var(--muted);
+  font-size:11px;
+  font-weight:700;
+}
+.playlist-duration-field input{
+  padding:10px;
+  border:1px solid #cfd8d1;
+  border-radius:8px;
+  font:inherit;
+}
 .picker{
   display:grid;
   grid-template-columns:repeat(auto-fill,minmax(130px,1fr));
@@ -259,4 +328,5 @@ dialog form{padding:28px;position:relative}
   .media-grid,.screen-grid,.list-grid{grid-template-columns:1fr}
   .toolbar{justify-content:flex-start}
   .discover-row{grid-template-columns:1fr}
+  .playlist-item-row{grid-template-columns:1fr}
 }
