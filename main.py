@@ -830,7 +830,10 @@ def admin() -> FileResponse:
 
 @app.get("/player")
 def player() -> FileResponse:
-    return FileResponse(STATIC / "player.html")
+    return FileResponse(
+        STATIC / "player.html",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache"},
+    )
 
 
 @app.get("/api/health")

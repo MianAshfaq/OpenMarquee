@@ -4,6 +4,53 @@ const form = document.querySelector("#pair-form");
 const input = document.querySelector("#code");
 const fullscreenToggle = document.querySelector("#fullscreen-toggle");
 const playerBoot = document.querySelector("#player-boot");
+const bootRecoveryTimer = window.setTimeout(() => {
+  document.body.classList.remove("player-loading");
+  playerBoot.style.display = "none";
+  pair.style.display = "grid";
+  stage.style.display = "none";
+}, 10000);
+
+function readStorage(storageName, key) {
+  try {
+    const storage = globalThis[storageName];
+    return storage?.getItem(key) || "";
+  } catch {
+    return "";
+  }
+}
+
+function writeStorage(storageName, key, value) {
+  try {
+    const storage = globalThis[storageName];
+    storage?.setItem(key, value);
+  } catch {}
+}
+
+function removeStorage(storageName, key) {
+  try {
+    const storage = globalThis[storageName];
+    storage?.removeItem(key);
+  } catch {}
+}
+
+function createInstanceId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  if (globalThis.crypto?.getRandomValues) {
+    const values = new Uint32Array(4);
+    globalThis.crypto.getRandomValues(values);
+    return [...values].map((value) => value.toString(16).padStart(8, "0")).join("-");
+  }
+  return `mobile-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+function finishPlayerBoot(showPairing = false) {
+  window.clearTimeout(bootRecoveryTimer);
+  document.body.classList.remove("player-loading");
+  playerBoot.style.display = "none";
+  pair.style.display = showPairing ? "grid" : "none";
+  stage.style.display = showPairing ? "none" : "block";
+}
 
 const imageAnimations = ["kenburns-in", "kenburns-out", "pan-left", "pan-right", "float-rise", "cinema-sweep"];
 const transitionEffects = ["fade", "slide-left", "slide-right", "slide-up", "slide-down", "zoom-in", "zoom-out", "push", "wipe", "dissolve", "flip", "rotate", "cube", "blur", "crossfade", "split", "circle", "curtain"];
@@ -29,7 +76,7 @@ const textFontStacks = {
   "urdu-nastaliq": '"Noto Nastaliq Urdu", "Segoe UI", Tahoma, serif',
 };
 
-let code = (params.get("code") || localStorage.getItem("openmarquee-code") || "").trim().toUpperCase();
+let code = (params.get("code") || readStorage("localStorage", "openmarquee-code") || "").trim().toUpperCase();
 let manifest = null;
 let manifestKey = "";
 let index = 0;
@@ -42,17 +89,17 @@ let liveActive = false;
 let liveReconnectTimer = null;
 let livePlaybackWatchdog = null;
 let liveLastVideoTime = -1;
-const instanceId = sessionStorage.getItem("openmarquee-instance") || crypto.randomUUID();
-sessionStorage.setItem("openmarquee-instance", instanceId);
+const instanceId = readStorage("sessionStorage", "openmarquee-instance") || createInstanceId();
+writeStorage("sessionStorage", "openmarquee-instance", instanceId);
 
 input.value = code;
-if (code) localStorage.setItem("openmarquee-code", code);
+if (code) writeStorage("localStorage", "openmarquee-code", code);
 
 form.onsubmit = (event) => {
   event.preventDefault();
   code = input.value.trim().toUpperCase();
   if (code.length !== 6) return;
-  localStorage.setItem("openmarquee-code", code);
+  writeStorage("localStorage", "openmarquee-code", code);
   if (liveSocket) {
     const previousSocket = liveSocket;
     liveSocket = null;
@@ -93,10 +140,7 @@ async function sync(first = false) {
     manifest = nextManifest;
     manifestKey = nextKey;
 
-    document.body.classList.remove("player-loading");
-    playerBoot.style.display = "none";
-    pair.style.display = "none";
-    stage.style.display = "block";
+    finishPlayerBoot(false);
     stage.dataset.fitMode = manifest.fit_mode || "contain";
 
     if (first || !stage.children.length || changed || (!hadItems && hasItems)) {
@@ -104,14 +148,11 @@ async function sync(first = false) {
     }
   } catch {
     if (first) {
-      localStorage.removeItem("openmarquee-code");
+      removeStorage("localStorage", "openmarquee-code");
       code = "";
       manifest = null;
       manifestKey = "";
-      document.body.classList.remove("player-loading");
-      playerBoot.style.display = "none";
-      pair.style.display = "grid";
-      stage.style.display = "none";
+      finishPlayerBoot(true);
       input.value = "";
       input.placeholder = "INVALID";
     }
@@ -753,8 +794,6 @@ if (code) {
   sync(true);
 }
 else {
-  document.body.classList.remove("player-loading");
-  playerBoot.style.display = "none";
-  pair.style.display = "grid";
+  finishPlayerBoot(true);
 }
 window.setInterval(() => sync(false), 15000);
