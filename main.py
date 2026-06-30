@@ -471,6 +471,29 @@ def normalize_profiles(values: list[str]) -> list[str]:
     return cleaned
 
 
+def require_existing_ids(table: str, ids: list[int], label: str) -> list[int]:
+    try:
+        normalized = [int(value) for value in ids]
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, f"Invalid {label} identifier") from exc
+    unique_ids = list(dict.fromkeys(value for value in normalized if value > 0))
+    if not unique_ids:
+        raise HTTPException(400, f"Select at least one {label}")
+    placeholders = ",".join("?" for _ in unique_ids)
+    existing = {int(row["id"]) for row in rows(f"SELECT id FROM {table} WHERE id IN ({placeholders})", tuple(unique_ids))}
+    missing = [value for value in unique_ids if value not in existing]
+    if missing:
+        raise HTTPException(404, f"Unknown {label}: {', '.join(str(value) for value in missing)}")
+    return unique_ids
+
+
+def validate_playlist_items(items: list[dict]) -> list[dict]:
+    if not items:
+        raise HTTPException(400, "Playlist needs at least one item")
+    require_existing_ids("media", [int(item["media_id"]) for item in items], "media item")
+    return items
+
+
 def parse_json(raw: str | None, fallback):
     try:
         return json.loads(raw or "")
@@ -1368,15 +1391,27 @@ def update_media_folder(media_id: int, folder_id: int = Form(0), _admin: str = D
 
 
 @app.delete("/api/media/{media_id}")
-def delete_media(media_id: int, _admin: str = Depends(require_admin)) -> dict:
+async def delete_media(media_id: int, _admin: str = Depends(require_admin)) -> dict:
     result = rows("SELECT filename, source_url, name FROM media WHERE id=?", (media_id,))
     if not result:
         raise HTTPException(404, "Media not found")
     if not result[0]["source_url"]:
         (UPLOADS / result[0]["filename"]).unlink(missing_ok=True)
+    affected_screen_ids = {int(row["id"]) for row in rows("SELECT id FROM screens WHERE override_media_id=?", (media_id,))}
+    playlist_updates: list[tuple[str, int]] = []
+    for playlist in rows("SELECT id, items FROM playlists"):
+        configured = parse_json(playlist.get("items"), [])
+        filtered = [item for item in configured if int(item.get("media_id") or 0) != media_id]
+        if len(filtered) != len(configured):
+            playlist_updates.append((json.dumps(filtered), int(playlist["id"])))
+            affected_screen_ids.update(int(row["id"]) for row in rows("SELECT id FROM screens WHERE playlist_id=?", (playlist["id"],)))
     with db() as conn:
+        conn.execute("UPDATE screens SET override_media_id=NULL WHERE override_media_id=?", (media_id,))
+        if playlist_updates:
+            conn.executemany("UPDATE playlists SET items=? WHERE id=?", playlist_updates)
         conn.execute("DELETE FROM media WHERE id=?", (media_id,))
     log_event(_admin, "delete", "media", result[0]["name"], {"media_id": media_id})
+    await LIVE_SHARE.refresh_screens(sorted(affected_screen_ids))
     return {"ok": True}
 
 
@@ -1400,8 +1435,7 @@ def create_playlist(
         duration = max(2, int(item.get("duration") or 10))
         if media_id:
             cleaned.append({"media_id": media_id, "duration": duration})
-    if not cleaned:
-        raise HTTPException(400, "Playlist needs at least one item")
+    validate_playlist_items(cleaned)
     cleaned_layout = normalize_layout_mode(layout_mode)
     cleaned_fit = normalize_fit_mode(fit_mode)
     cleaned_transition = normalize_transition_mode(transition_mode)
@@ -1424,7 +1458,7 @@ def create_playlist(
 
 
 @app.put("/api/playlists/{playlist_id}")
-def update_playlist(
+async def update_playlist(
     playlist_id: int,
     name: str = Form(...),
     items: str = Form("[]"),
@@ -1448,8 +1482,7 @@ def update_playlist(
         duration = max(2, int(item.get("duration") or 10))
         if media_id:
             cleaned.append({"media_id": media_id, "duration": duration})
-    if not cleaned:
-        raise HTTPException(400, "Playlist needs at least one item")
+    validate_playlist_items(cleaned)
     with db() as conn:
         cursor = conn.execute(
             "UPDATE playlists SET name=?, items=?, layout_mode=?, fit_mode=?, transition_mode=?, transition_modes=? WHERE id=?",
@@ -1466,18 +1499,22 @@ def update_playlist(
         if cursor.rowcount == 0:
             raise HTTPException(404, "Playlist not found")
     log_event(_admin, "update", "playlist", name.strip() or "Untitled playlist", {"playlist_id": playlist_id, "items": len(cleaned)})
+    assigned_screen_ids = [int(row["id"]) for row in rows("SELECT id FROM screens WHERE playlist_id=?", (playlist_id,))]
+    await LIVE_SHARE.refresh_screens(assigned_screen_ids)
     return {"ok": True}
 
 
 @app.delete("/api/playlists/{playlist_id}")
-def delete_playlist(playlist_id: int, _admin: str = Depends(require_admin)) -> dict:
+async def delete_playlist(playlist_id: int, _admin: str = Depends(require_admin)) -> dict:
     playlist_rows = rows("SELECT name FROM playlists WHERE id=?", (playlist_id,))
     if not playlist_rows:
         raise HTTPException(404, "Playlist not found")
+    assigned_screen_ids = [int(row["id"]) for row in rows("SELECT id FROM screens WHERE playlist_id=?", (playlist_id,))]
     with db() as conn:
         conn.execute("UPDATE screens SET playlist_id=NULL WHERE playlist_id=?", (playlist_id,))
         cursor = conn.execute("DELETE FROM playlists WHERE id=?", (playlist_id,))
     log_event(_admin, "delete", "playlist", playlist_rows[0]["name"], {"playlist_id": playlist_id})
+    await LIVE_SHARE.refresh_screens(assigned_screen_ids)
     return {"ok": True}
 
 
@@ -1542,12 +1579,11 @@ def regenerate_pairing_code(screen_id: int, _admin: str = Depends(require_admin)
 
 @app.post("/api/screens/assign-many")
 async def assign_many_screens(payload: dict, _admin: str = Depends(require_admin)) -> dict:
-    screen_ids = [int(screen_id) for screen_id in payload.get("screen_ids", [])]
+    screen_ids = require_existing_ids("screens", payload.get("screen_ids", []), "screen")
     playlist_id = int(payload.get("playlist_id") or 0)
-    if not screen_ids:
-        raise HTTPException(400, "Select at least one screen")
     if not playlist_id:
         raise HTTPException(400, "Choose a playlist")
+    require_existing_ids("playlists", [playlist_id], "playlist")
     with db() as conn:
         conn.executemany(
             "UPDATE screens SET playlist_id=?, override_media_id=NULL WHERE id=?",
@@ -1560,6 +1596,8 @@ async def assign_many_screens(payload: dict, _admin: str = Depends(require_admin
 
 @app.post("/api/screens/{screen_id}/assign")
 async def assign_playlist(screen_id: int, playlist_id: int = Form(...), _admin: str = Depends(require_admin)) -> dict:
+    require_existing_ids("screens", [screen_id], "screen")
+    require_existing_ids("playlists", [playlist_id], "playlist")
     with db() as conn:
         conn.execute("UPDATE screens SET playlist_id=?, override_media_id=NULL WHERE id=?", (playlist_id, screen_id))
     log_event(_admin, "assign", "screen", f"screen:{screen_id}", {"playlist_id": playlist_id})
@@ -1569,9 +1607,7 @@ async def assign_playlist(screen_id: int, playlist_id: int = Form(...), _admin: 
 
 @app.post("/api/screens/stop-many")
 async def stop_many_screens(payload: dict, _admin: str = Depends(require_admin)) -> dict:
-    screen_ids = [int(screen_id) for screen_id in payload.get("screen_ids", [])]
-    if not screen_ids:
-        raise HTTPException(400, "Select at least one screen")
+    screen_ids = require_existing_ids("screens", payload.get("screen_ids", []), "screen")
     with db() as conn:
         conn.executemany("UPDATE screens SET playlist_id=NULL, override_media_id=NULL WHERE id=?", [(screen_id,) for screen_id in screen_ids])
     log_event(_admin, "stop_many", "screen", f"{len(screen_ids)} screens", {"screen_ids": screen_ids})
@@ -1581,6 +1617,7 @@ async def stop_many_screens(payload: dict, _admin: str = Depends(require_admin))
 
 @app.post("/api/screens/{screen_id}/stop")
 async def stop_screen(screen_id: int, _admin: str = Depends(require_admin)) -> dict:
+    require_existing_ids("screens", [screen_id], "screen")
     with db() as conn:
         conn.execute("UPDATE screens SET playlist_id=NULL, override_media_id=NULL WHERE id=?", (screen_id,))
     log_event(_admin, "stop", "screen", f"screen:{screen_id}", {"screen_id": screen_id})
@@ -1590,10 +1627,8 @@ async def stop_screen(screen_id: int, _admin: str = Depends(require_admin)) -> d
 
 @app.post("/api/screens/present-media")
 async def present_media(payload: dict, _admin: str = Depends(require_admin)) -> dict:
-    screen_ids = [int(screen_id) for screen_id in payload.get("screen_ids", [])]
+    screen_ids = require_existing_ids("screens", payload.get("screen_ids", []), "screen")
     media_id = int(payload.get("media_id") or 0)
-    if not screen_ids:
-        raise HTTPException(400, "Select at least one screen")
     media_rows = rows("SELECT id, name FROM media WHERE id=?", (media_id,))
     if not media_rows:
         raise HTTPException(404, "Media not found")
@@ -1606,9 +1641,7 @@ async def present_media(payload: dict, _admin: str = Depends(require_admin)) -> 
 
 @app.post("/api/screens/stop-presentation")
 async def stop_presentation(payload: dict, _admin: str = Depends(require_admin)) -> dict:
-    screen_ids = [int(screen_id) for screen_id in payload.get("screen_ids", [])]
-    if not screen_ids:
-        raise HTTPException(400, "Select at least one screen")
+    screen_ids = require_existing_ids("screens", payload.get("screen_ids", []), "screen")
     with db() as conn:
         conn.executemany("UPDATE screens SET override_media_id=NULL WHERE id=?", [(screen_id,) for screen_id in screen_ids])
     log_event(_admin, "stop_presentation", "screen", f"{len(screen_ids)} screens", {"screen_ids": screen_ids})

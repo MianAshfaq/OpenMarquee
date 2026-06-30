@@ -40,6 +40,8 @@ let livePeer = null;
 let liveSessionId = "";
 let liveActive = false;
 let liveReconnectTimer = null;
+let livePlaybackWatchdog = null;
+let liveLastVideoTime = -1;
 const instanceId = localStorage.getItem("openmarquee-instance") || crypto.randomUUID();
 localStorage.setItem("openmarquee-instance", instanceId);
 
@@ -182,7 +184,7 @@ function normalizeYouTubeUrl(value) {
     }
     if (!videoId) return value;
     const origin = encodeURIComponent(window.location.origin);
-    return `https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&mute=1&controls=1&loop=1&playlist=${videoId}&playsinline=1&rel=0&modestbranding=1&enablejsapi=1&iv_load_policy=3&origin=${origin}`;
+    return `https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&mute=0&controls=1&loop=1&playlist=${videoId}&playsinline=1&rel=0&modestbranding=1&enablejsapi=1&iv_load_policy=3&origin=${origin}`;
   } catch {
     return value;
   }
@@ -241,6 +243,15 @@ function attemptPlay(mediaElement) {
   if (promise && typeof promise.catch === "function") promise.catch(() => {});
 }
 
+function attemptVideoPlayback(video) {
+  const promise = video.play();
+  if (!promise?.catch) return;
+  promise.catch(() => {
+    video.muted = true;
+    video.play().catch(() => {});
+  });
+}
+
 function liveSocketUrl() {
   const protocol = location.protocol === "https:" ? "wss" : "ws";
   return `${protocol}://${location.host}/ws/live/player?code=${encodeURIComponent(code)}&instance=${encodeURIComponent(instanceId)}`;
@@ -253,6 +264,9 @@ function sendPlayerSignal(message) {
 function stopLivePlayback() {
   liveActive = false;
   liveSessionId = "";
+  window.clearInterval(livePlaybackWatchdog);
+  livePlaybackWatchdog = null;
+  liveLastVideoTime = -1;
   livePeer?.close();
   livePeer = null;
   sync(true);
@@ -261,29 +275,92 @@ function stopLivePlayback() {
 function showLiveStream(stream) {
   clearTimeout(timer);
   liveActive = true;
-  const scene = document.createElement("section");
-  scene.className = "scene scene-single scene-live active";
-  const video = document.createElement("video");
-  video.className = "live-stream-video";
-  video.autoplay = true;
+  let scene = stage.querySelector(".scene-live");
+  if (!scene) {
+    scene = document.createElement("section");
+    scene.className = "scene scene-single scene-live active";
+    scene.innerHTML = `
+      <video class="live-stream-video" autoplay muted playsinline></video>
+      <audio class="live-stream-audio" autoplay></audio>
+      <div class="live-playback-notice" hidden></div>
+    `;
+    stage.querySelectorAll(".scene").forEach((oldScene) => cleanupScene(oldScene));
+    stage.replaceChildren(scene);
+  }
+
+  const video = scene.querySelector(".live-stream-video");
+  const audio = scene.querySelector(".live-stream-audio");
+  const notice = scene.querySelector(".live-playback-notice");
+  video.muted = true;
   video.playsInline = true;
-  video.controls = false;
-  video.srcObject = stream;
-  scene.appendChild(video);
-  stage.querySelectorAll(".scene").forEach((oldScene) => cleanupScene(oldScene));
-  stage.replaceChildren(scene);
-  attemptPlay(video);
+  video.disablePictureInPicture = true;
+  if (video.srcObject !== stream) video.srcObject = stream;
+  if (audio.srcObject !== stream) audio.srcObject = stream;
+
+  const resumeVideo = () => {
+    const playPromise = video.play();
+    if (playPromise?.catch) playPromise.catch(() => {});
+  };
+  const resumeAudio = () => {
+    if (!stream.getAudioTracks().length) return;
+    const playPromise = audio.play();
+    if (playPromise?.catch) {
+      playPromise.catch(() => {
+        notice.hidden = false;
+        notice.dataset.noticeType = "audio";
+        notice.textContent = "Live picture is playing. Press any key or click once to enable sound.";
+        const unlock = () => {
+          audio.play().then(() => {
+            if (notice.dataset.noticeType === "audio") notice.hidden = true;
+          }).catch(() => {});
+        };
+        document.addEventListener("pointerdown", unlock, { once: true });
+        document.addEventListener("keydown", unlock, { once: true });
+      });
+    }
+  };
+  video.onloadedmetadata = resumeVideo;
+  stream.getVideoTracks().forEach((track) => {
+    track.onmute = () => {
+      notice.hidden = false;
+      notice.dataset.noticeType = "source";
+      notice.textContent = "The shared source is temporarily paused. Keep the shared window visible or share the entire display.";
+    };
+    track.onunmute = () => {
+      if (notice.dataset.noticeType === "source") notice.hidden = true;
+      resumeVideo();
+    };
+  });
+  resumeVideo();
+  resumeAudio();
+
+  window.clearInterval(livePlaybackWatchdog);
+  livePlaybackWatchdog = window.setInterval(() => {
+    if (!liveActive || !stream.active) return;
+    const currentTime = Number(video.currentTime || 0);
+    if (video.paused || (currentTime === liveLastVideoTime && stream.getVideoTracks().some((track) => track.readyState === "live" && !track.muted))) {
+      resumeVideo();
+    }
+    liveLastVideoTime = currentTime;
+  }, 3000);
 }
 
 async function receiveLiveOffer(message) {
   livePeer?.close();
   const peer = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
   peer.pendingCandidates = [];
+  peer.liveStream = new MediaStream();
   livePeer = peer;
   peer.onicecandidate = (event) => {
     if (event.candidate) sendPlayerSignal({ type: "ice", candidate: event.candidate });
   };
-  peer.ontrack = (event) => showLiveStream(event.streams[0]);
+  peer.ontrack = (event) => {
+    const incomingTracks = event.streams[0]?.getTracks?.() || [event.track];
+    incomingTracks.forEach((track) => {
+      if (!peer.liveStream.getTracks().some((existing) => existing.id === track.id)) peer.liveStream.addTrack(track);
+    });
+    showLiveStream(peer.liveStream);
+  };
   peer.onconnectionstatechange = () => {
     if (["failed", "closed"].includes(peer.connectionState) && livePeer === peer && liveActive) stopLivePlayback();
   };
@@ -372,7 +449,7 @@ function createVideoPanel(item) {
 
   panel.append(backdrop, video);
   attemptPlay(backdrop);
-  attemptPlay(video);
+  attemptVideoPlayback(video);
   return panel;
 }
 

@@ -1252,7 +1252,17 @@ async function createLiveSender(screenId, instanceId) {
   };
   peer.onconnectionstatechange = () => {
     updateLiveViewerCount();
-    if (["failed", "closed"].includes(peer.connectionState)) liveShare.peers.delete(key);
+    if (peer.connectionState === "disconnected") {
+      window.clearTimeout(peer.recoveryTimer);
+      peer.recoveryTimer = window.setTimeout(() => {
+        if (liveShare.stream && liveShare.peers.get(key) === peer && peer.connectionState === "disconnected") createLiveSender(screenId, instanceId).catch(() => {});
+      }, 4000);
+    }
+    if (peer.connectionState === "failed") {
+      if (liveShare.peers.get(key) === peer) liveShare.peers.delete(key);
+      if (liveShare.stream) window.setTimeout(() => createLiveSender(screenId, instanceId).catch(() => {}), 800);
+    }
+    if (peer.connectionState === "closed" && liveShare.peers.get(key) === peer) liveShare.peers.delete(key);
   };
   const offer = await peer.createOffer();
   await peer.setLocalDescription(offer);
@@ -1289,6 +1299,8 @@ function connectLiveAdminSocket() {
         liveShare.peers.get(key)?.close();
         liveShare.peers.delete(key);
         updateLiveViewerCount();
+      } else if (message.type === "player-error") {
+        toast(`Player could not start the live feed: ${message.detail || "unknown playback error"}`);
       }
     };
     socket.onerror = () => {
@@ -1310,7 +1322,14 @@ async function startLiveShare(displaySurface = "monitor") {
   });
   liveShare.stream = stream;
   $("#live-share-preview").srcObject = stream;
-  stream.getVideoTracks()[0].addEventListener("ended", () => stopLiveShare());
+  const videoTrack = stream.getVideoTracks()[0];
+  videoTrack.addEventListener("ended", () => stopLiveShare());
+  videoTrack.addEventListener("mute", () => {
+    if (liveShare.active) setLiveShareUi(true, "Source paused by the operating system");
+  });
+  videoTrack.addEventListener("unmute", () => {
+    if (liveShare.active) setLiveShareUi(true, stream.getAudioTracks().length ? "Live with audio" : "Live - no audio selected");
+  });
   try {
     await connectLiveAdminSocket();
     sendLiveSignal({ type: "live-start", screen_ids: [...liveShare.selected] });
