@@ -71,20 +71,20 @@
         <h1 id="page-title">Digital signage at a glance</h1>
       </div>
       <div class="header-actions">
-        <a class="icon-button" href="/player" target="_blank" title="Open player"><i class="fa-solid fa-up-right-from-square"></i><span>Player</span></a>
-        <button class="secondary" id="change-password"><i class="fa-solid fa-key"></i><span>Password</span></button>
-        <button class="secondary" id="mfa-button"><i class="fa-solid fa-shield-halved"></i><span id="mfa-state">MFA off</span></button>
+        <a class="icon-control" href="/player" target="_blank" aria-label="Open player" data-tooltip="Open player"><i class="fa-solid fa-up-right-from-square"></i></a>
+        <button class="icon-control" id="change-password" aria-label="Change password" data-tooltip="Change password"><i class="fa-solid fa-key"></i></button>
+        <button class="icon-control" id="mfa-button" aria-label="MFA settings" data-tooltip="MFA settings"><i class="fa-solid fa-shield-halved"></i><span id="mfa-state" class="sr-only">MFA off</span></button>
         <div class="session-pill"><i class="fa-solid fa-user-shield"></i><span id="session-user">admin</span></div>
-        <button class="secondary" id="logout-button"><i class="fa-solid fa-right-from-bracket"></i><span>Logout</span></button>
+        <button class="icon-control danger" id="logout-button" aria-label="Sign out" data-tooltip="Sign out"><i class="fa-solid fa-right-from-bracket"></i></button>
       </div>
     </header>
 
     <section id="overview" class="view active-view">
       <div class="stats">
-        <article><span>Connected screens</span><strong id="screen-count">0</strong><small id="online-count">0 online now</small></article>
-        <article><span>Media assets</span><strong id="media-count">0</strong><small>Stored locally</small></article>
-        <article><span>Active playlists</span><strong id="playlist-count">0</strong><small>Ready to publish</small></article>
-        <article><span>Live pairing sessions</span><strong id="live-instance-count">0</strong><small id="active-code-count">0 active codes</small></article>
+        <article><span class="metric-icon"><i class="fa-solid fa-display"></i></span><div><span>Connected screens</span><strong id="screen-count">0</strong><small id="online-count">0 online now</small></div></article>
+        <article><span class="metric-icon"><i class="fa-solid fa-photo-film"></i></span><div><span>Media assets</span><strong id="media-count">0</strong><small>Stored locally</small></div></article>
+        <article><span class="metric-icon"><i class="fa-solid fa-list-check"></i></span><div><span>Active playlists</span><strong id="playlist-count">0</strong><small>Ready to publish</small></div></article>
+        <article><span class="metric-icon"><i class="fa-solid fa-tower-broadcast"></i></span><div><span>Live pairing sessions</span><strong id="live-instance-count">0</strong><small id="active-code-count">0 active codes</small></div></article>
       </div>
       <div class="band">
         <div>
@@ -114,11 +114,11 @@
       <div class="section-title">
         <div><p class="eyebrow">CONTENT</p><h2>Media library</h2></div>
         <div class="toolbar">
-          <button class="secondary" id="new-folder"><i class="fa-solid fa-folder-plus"></i><span>Add folder</span></button>
-          <button class="secondary" id="new-text"><i class="fa-solid fa-font"></i><span>Add text</span></button>
-          <button class="secondary" id="new-countdown"><i class="fa-solid fa-hourglass-half"></i><span>Add countdown</span></button>
-          <button class="secondary" id="new-source"><i class="fa-solid fa-link"></i><span>Add source</span></button>
-          <label class="primary">Add media<input id="file-input" type="file" accept="image/*,video/*,application/pdf,audio/*,text/html" multiple hidden></label>
+          <button class="icon-control" id="new-folder" aria-label="Add folder" data-tooltip="Add folder"><i class="fa-solid fa-folder-plus"></i></button>
+          <button class="icon-control" id="new-text" aria-label="Create text ad" data-tooltip="Create text ad"><i class="fa-solid fa-font"></i></button>
+          <button class="icon-control" id="new-countdown" aria-label="Create countdown" data-tooltip="Create countdown"><i class="fa-solid fa-hourglass-half"></i></button>
+          <button class="icon-control" id="new-source" aria-label="Add URL source" data-tooltip="Add URL source"><i class="fa-solid fa-link"></i></button>
+          <label class="icon-control primary-icon" aria-label="Upload media" data-tooltip="Upload media"><i class="fa-solid fa-cloud-arrow-up"></i><input id="file-input" type="file" accept="image/*,video/*,application/pdf,audio/*,text/html,.ppt,.pptx,.doc,.docx,.xls,.xlsx" multiple hidden></label>
         </div>
       </div>
       <div id="folder-bar" class="folder-bar"></div>
@@ -128,7 +128,7 @@
     <section id="playlists" class="view">
       <div class="section-title">
         <div><p class="eyebrow">PROGRAMMING</p><h2>Playlists</h2></div>
-        <button class="primary" id="new-playlist">New playlist</button>
+        <button class="icon-control primary-icon" id="new-playlist" aria-label="Create playlist" data-tooltip="Create playlist"><i class="fa-solid fa-plus"></i></button>
       </div>
       <div id="playlist-grid" class="list-grid"></div>
     </section>
@@ -137,12 +137,12 @@
       <div class="section-title">
         <div><p class="eyebrow">DEVICES</p><h2>Screens</h2></div>
         <div class="toolbar">
-          <button class="secondary" id="discover-screens"><i class="fa-solid fa-wifi"></i><span>Discover</span></button>
-          <button class="secondary" id="assign-selected"><i class="fa-solid fa-play"></i><span>Assign selected</span></button>
-          <button class="secondary" id="stop-selected"><i class="fa-solid fa-stop"></i><span>Stop selected</span></button>
-          <button class="secondary" id="assign-all"><i class="fa-solid fa-bullhorn"></i><span>Assign all</span></button>
-          <button class="secondary" id="stop-all"><i class="fa-solid fa-power-off"></i><span>Stop all</span></button>
-          <button class="primary" id="new-screen"><i class="fa-solid fa-plus"></i><span>Add screen</span></button>
+          <button class="icon-control" id="discover-screens" aria-label="Discover network screens" data-tooltip="Discover network screens"><i class="fa-solid fa-satellite-dish"></i></button>
+          <button class="icon-control" id="assign-selected" aria-label="Publish to selected screens" data-tooltip="Publish selected"><i class="fa-solid fa-play"></i></button>
+          <button class="icon-control" id="stop-selected" aria-label="Stop selected screens" data-tooltip="Stop selected"><i class="fa-solid fa-stop"></i></button>
+          <button class="icon-control" id="assign-all" aria-label="Publish to all screens" data-tooltip="Publish all"><i class="fa-solid fa-bullhorn"></i></button>
+          <button class="icon-control danger" id="stop-all" aria-label="Stop all screens" data-tooltip="Stop all"><i class="fa-solid fa-power-off"></i></button>
+          <button class="icon-control primary-icon" id="new-screen" aria-label="Add screen" data-tooltip="Add screen"><i class="fa-solid fa-plus"></i></button>
         </div>
       </div>
       <div class="selection-bar">
@@ -163,8 +163,8 @@
       <div class="section-title">
         <div><p class="eyebrow">LIVE BROADCAST</p><h2>Share your screen</h2></div>
         <div class="toolbar">
-          <button class="secondary" id="live-select-all"><i class="fa-solid fa-check-double"></i><span>Select all</span></button>
-          <button class="danger" id="stop-live-share" disabled><i class="fa-solid fa-stop"></i><span>Stop live share</span></button>
+          <button class="icon-control" id="live-select-all" aria-label="Select all destination screens" data-tooltip="Select all screens"><i class="fa-solid fa-check-double"></i></button>
+          <button class="icon-control danger" id="stop-live-share" disabled aria-label="Stop live share" data-tooltip="Stop live share"><i class="fa-solid fa-stop"></i></button>
         </div>
       </div>
       <div id="live-secure-note" class="secure-context-note" hidden>
@@ -221,7 +221,7 @@
 
   <dialog id="modal">
     <form method="dialog">
-      <button class="modal-close" data-modal-close type="button" aria-label="Close dialog">x</button>
+      <button class="modal-close" data-modal-close type="button" aria-label="Close dialog" title="Close"><i class="fa-solid fa-xmark"></i></button>
       <div id="modal-body"></div>
     </form>
   </dialog>

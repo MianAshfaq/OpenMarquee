@@ -151,6 +151,34 @@ function toast(message) {
   setTimeout(() => el.classList.remove("show"), 2400);
 }
 
+async function copyText(value) {
+  try {
+    await navigator.clipboard.writeText(value);
+    return true;
+  } catch {}
+  const input = document.createElement("textarea");
+  input.value = value;
+  input.setAttribute("readonly", "");
+  input.style.position = "fixed";
+  input.style.opacity = "0";
+  document.body.appendChild(input);
+  input.select();
+  const copied = document.execCommand("copy");
+  input.remove();
+  if (copied) return true;
+  showModal(`
+    <p class="eyebrow">MANUAL COPY</p>
+    <h2>Copy this value</h2>
+    <div class="field"><input id="manual-copy-value" value="${escapeHtml(value)}" readonly></div>
+    <div class="modal-footer">${modalCancelButton("Close")}</div>
+  `, async () => {}, (dialog) => {
+    const field = dialog.querySelector("#manual-copy-value");
+    field.focus();
+    field.select();
+  });
+  return false;
+}
+
 function escapeHtml(value) {
   const el = document.createElement("div");
   el.textContent = value ?? "";
@@ -289,22 +317,28 @@ async function refresh() {
 }
 
 function screenMeta(screen) {
-  const parts = [
-    `Pairing code: <strong>${screen.code}</strong>`,
-    screen.pairing_expires_in ? `Pairing expires in: ${Math.ceil(screen.pairing_expires_in / 60)} min` : null,
-    `Brand: ${escapeHtml(screenBrandLabel(screen.brand || "unknown"))}`,
-    screen.vendor_name ? `Vendor: ${escapeHtml(screen.vendor_name)}` : null,
-    screen.model ? `Model: ${escapeHtml(screen.model)}` : null,
-    `Runtime: ${escapeHtml(screenRuntimeLabel(screen.runtime || "browser"))}`,
-    screen.profile ? `Profile: ${escapeHtml(profileLabel(screen.profile))}` : null,
-    `Orientation: ${escapeHtml(screen.orientation)}`,
-    screen.ip_address ? `IP: ${escapeHtml(screen.ip_address)}` : "IP: Not saved",
-    screen.mac_address ? `MAC: ${escapeHtml(screen.mac_address)}` : null,
-    screen.connected_instances ? `Connected players: ${Number(screen.connected_instances)}` : "Connected players: 0",
-    `Playlist: ${escapeHtml(screenPlaylistName(screen))}`,
-  ].filter(Boolean);
-  if (screen.notes) parts.push(`Notes: ${escapeHtml(screen.notes)}`);
-  return parts.join("<br>");
+  const connected = Number(screen.connected_instances || 0);
+  const pairingState = screen.paired_at
+    ? "Reusable code - open on multiple browsers"
+    : `Expires in ${Math.max(1, Math.ceil(Number(screen.pairing_expires_in || 0) / 60))} min until first pairing`;
+  const rows = [
+    ["fa-fingerprint", "Pairing", `<button class="pairing-code" data-action="copy-pairing-code" data-screen-id="${screen.id}" aria-label="Copy pairing code ${screen.code}" data-tooltip="Copy pairing code" title="Copy pairing code">${screen.code}</button>`],
+    ["fa-layer-group", "Players", `${connected} connected ${connected > 1 ? '<span class="shared-tag">Shared</span>' : ""}`],
+    ["fa-circle-info", "Access", escapeHtml(pairingState)],
+    ["fa-photo-film", "Playlist", escapeHtml(screenPlaylistName(screen))],
+    ["fa-tv", "Device", `${escapeHtml(screenBrandLabel(screen.brand || "unknown"))}${screen.model ? ` ${escapeHtml(screen.model)}` : ""}`],
+    ["fa-microchip", "Runtime", escapeHtml(screenRuntimeLabel(screen.runtime || "browser"))],
+    ["fa-network-wired", "Network", screen.ip_address ? escapeHtml(screen.ip_address) : "No IP saved"],
+  ];
+  if (screen.profile) rows.push(["fa-briefcase", "Profile", escapeHtml(profileLabel(screen.profile))]);
+  if (screen.notes) rows.push(["fa-note-sticky", "Notes", escapeHtml(screen.notes)]);
+  return `<div class="screen-meta">${rows.map(([icon, label, value]) => `
+    <div class="meta-row"><i class="fa-solid ${icon}"></i><span>${label}</span><strong>${value}</strong></div>
+  `).join("")}</div>`;
+}
+
+function iconAction(action, idName, id, icon, label, danger = false) {
+  return `<button class="icon-action ${danger ? "danger" : ""}" data-action="${action}" data-${idName}="${id}" aria-label="${escapeHtml(label)}" data-tooltip="${escapeHtml(label)}" title="${escapeHtml(label)}"><i class="fa-solid ${icon}"></i></button>`;
 }
 
 function networkBadgeClass(screen) {
@@ -322,12 +356,12 @@ function overviewScreenCard(screen) {
           <span class="badge ${networkBadgeClass(screen)}">${escapeHtml(screen.network_status_label)}</span>
         </div>
         <h3>${escapeHtml(screen.name)}</h3>
-        <p>${screenMeta(screen)}</p>
+        ${screenMeta(screen)}
         <div class="card-actions">
-          <button class="secondary" data-action="assign-screen" data-screen-id="${screen.id}"><i class="fa-solid fa-photo-film"></i><span>Assign</span></button>
-          <button class="secondary" data-action="stop-screen" data-screen-id="${screen.id}"><i class="fa-solid fa-stop"></i><span>Stop</span></button>
-          <button class="secondary" data-action="regen-code" data-screen-id="${screen.id}"><i class="fa-solid fa-rotate"></i><span>Code</span></button>
-          <button class="secondary" data-action="copy-player-link" data-screen-id="${screen.id}"><i class="fa-solid fa-link"></i><span>Player link</span></button>
+          ${iconAction("assign-screen", "screen-id", screen.id, "fa-photo-film", "Assign playlist")}
+          ${iconAction("stop-screen", "screen-id", screen.id, "fa-stop", "Stop playback")}
+          ${iconAction("copy-pairing-code", "screen-id", screen.id, "fa-fingerprint", "Copy pairing code")}
+          ${iconAction("copy-player-link", "screen-id", screen.id, "fa-link", "Copy shared player link")}
         </div>
       </div>
     </article>
@@ -339,7 +373,7 @@ function fleetScreenCard(screen) {
     <article class="card ${screen.online ? "card-live" : ""}">
       <div class="card-body">
         <label class="screen-select">
-          <input type="checkbox" ${selectedScreens.has(screen.id) ? "checked" : ""} onchange="toggleScreenSelection(${screen.id}, this.checked)">
+          <input type="checkbox" data-screen-select="${screen.id}" ${selectedScreens.has(screen.id) ? "checked" : ""}>
           <span>Select</span>
         </label>
         <div class="badge-row">
@@ -347,14 +381,15 @@ function fleetScreenCard(screen) {
           <span class="badge ${networkBadgeClass(screen)}">${escapeHtml(screen.network_status_label)}</span>
         </div>
         <h3>${escapeHtml(screen.name)}</h3>
-        <p>${screenMeta(screen)}</p>
+        ${screenMeta(screen)}
         <div class="card-actions">
-          <button class="secondary" data-action="assign-screen" data-screen-id="${screen.id}"><i class="fa-solid fa-play"></i><span>Publish</span></button>
-          <button class="secondary" data-action="stop-screen" data-screen-id="${screen.id}"><i class="fa-solid fa-stop"></i><span>Stop</span></button>
-          <button class="secondary" data-action="regen-code" data-screen-id="${screen.id}"><i class="fa-solid fa-rotate"></i><span>Code</span></button>
-          <button class="secondary" data-action="copy-player-link" data-screen-id="${screen.id}"><i class="fa-solid fa-link"></i><span>Link</span></button>
-          <button class="secondary" data-action="edit-screen" data-screen-id="${screen.id}"><i class="fa-solid fa-pen"></i><span>Edit</span></button>
-          <button class="secondary danger" data-action="delete-screen" data-screen-id="${screen.id}"><i class="fa-solid fa-trash"></i><span>Delete</span></button>
+          ${iconAction("assign-screen", "screen-id", screen.id, "fa-play", "Publish playlist")}
+          ${iconAction("stop-screen", "screen-id", screen.id, "fa-stop", "Stop playback")}
+          ${iconAction("copy-pairing-code", "screen-id", screen.id, "fa-fingerprint", "Copy pairing code")}
+          ${iconAction("copy-player-link", "screen-id", screen.id, "fa-link", "Copy shared player link")}
+          ${iconAction("regen-code", "screen-id", screen.id, "fa-rotate", "Generate new pairing code")}
+          ${iconAction("edit-screen", "screen-id", screen.id, "fa-pen", "Edit screen")}
+          ${iconAction("delete-screen", "screen-id", screen.id, "fa-trash", "Delete screen", true)}
         </div>
       </div>
     </article>
@@ -383,9 +418,9 @@ function mediaCard(media) {
         <h3>${escapeHtml(media.name)}</h3>
         <p>${escapeHtml(mediaTypeLabel(media.kind))} - ${media.size ? bytes(media.size) : "Remote source"}</p>
         <div class="card-actions">
-          ${editable ? `<button class="secondary" data-action="edit-media" data-media-id="${media.id}"><i class="fa-solid fa-pen"></i><span>Edit</span></button>` : ""}
-          <button class="secondary" data-action="move-media" data-media-id="${media.id}"><i class="fa-solid fa-folder-open"></i><span>Move</span></button>
-          <button class="secondary danger" data-action="delete-media" data-media-id="${media.id}"><i class="fa-solid fa-trash"></i><span>Delete</span></button>
+          ${editable ? iconAction("edit-media", "media-id", media.id, "fa-pen", "Edit media") : ""}
+          ${iconAction("move-media", "media-id", media.id, "fa-folder-open", "Move to folder")}
+          ${iconAction("delete-media", "media-id", media.id, "fa-trash", "Delete media", true)}
         </div>
       </div>
     </article>
@@ -403,8 +438,8 @@ function playlistCard(playlist) {
         <p>${escapeHtml(layoutLabel(playlist.layout_mode))} - ${escapeHtml(fitLabel(playlist.fit_mode))}</p>
         <p>${escapeHtml(transitionSummary(playlist))}</p>
         <div class="card-actions">
-          <button class="secondary" data-action="edit-playlist" data-playlist-id="${playlist.id}"><i class="fa-solid fa-pen"></i><span>Edit</span></button>
-          <button class="secondary danger" data-action="delete-playlist" data-playlist-id="${playlist.id}"><i class="fa-solid fa-trash"></i><span>Delete</span></button>
+          ${iconAction("edit-playlist", "playlist-id", playlist.id, "fa-pen", "Edit playlist")}
+          ${iconAction("delete-playlist", "playlist-id", playlist.id, "fa-trash", "Delete playlist", true)}
         </div>
       </div>
     </article>
@@ -507,6 +542,7 @@ function render() {
   const helpCards = [
     helpCard("1. How do I add a screen?", "Open Screens, then choose Add screen for manual entry or Discover to find visible devices on your local network. Save the screen, then use the pairing code on the player screen or player app.", "Best production flow: run the player on Android TV, Raspberry Pi, or a kiosk browser and keep that device paired."),
     helpCard("2. How does content reach the LCD?", "The LCD itself does not receive files directly by IP. A paired player device opens OpenMarquee, checks the assigned playlist, and automatically streams or loads the content for that screen.", "This is why the player status matters more than simple network ping. A screen can answer ping and still be disconnected from playback."),
+    helpCard("2b. Can one pairing code open on multiple browsers?", "Yes. After the first successful pairing, the screen code becomes reusable. Open the player on another browser, device, or tab and enter the same six-character code. Every connected player receives the same playlist and live broadcasts.", "Each browser tab now receives its own player identity. The screen card shows the live player count and marks shared codes when more than one player is connected."),
     helpCard("3. How do I publish media?", "Upload images, videos, PDFs, audio, or add URLs from the Media Library. Then create a playlist, set durations, choose transitions, and publish that playlist to one screen, selected screens, or all screens.", "Use split layouts only when you intentionally want multiple items visible at the same time. Full screen stays the default."),
     helpCard("4. How do text ads work?", "Choose Add text in the Media Library, select a preset, then customize headline, supporting copy, animation, font style, colors, alignment, and folder. Saved text ads can also be edited later from the library.", "Text slides are ideal for promotions, meeting notices, Arabic and Urdu welcome screens, safety alerts, and branded campaigns."),
     helpCard("4b. How do countdowns work?", "Use Add countdown to set a future date and time. The player will show a live countdown and automatically continue to the next playlist item after the timer completes.", "Countdowns work well for store openings, prayer room notices, launches, meetings, and event starts."),
@@ -1086,8 +1122,13 @@ window.stopOne = async (screenId) => {
 window.copyPlayerLink = async (screenId) => {
   const screen = state.screens.find((item) => item.id === screenId);
   if (!screen) return;
-  await navigator.clipboard.writeText(playerUrl(screen));
-  toast("Player link copied");
+  if (await copyText(playerUrl(screen))) toast("Player link copied");
+};
+
+window.copyPairingCode = async (screenId) => {
+  const screen = state.screens.find((item) => item.id === screenId);
+  if (!screen) return;
+  if (await copyText(screen.code)) toast(`Pairing code ${screen.code} copied - reuse it in additional browsers`);
 };
 
 window.regeneratePairingCode = async (screenId) => {
@@ -1505,6 +1546,7 @@ document.addEventListener("click", async (event) => {
     if (button.dataset.action === "assign-screen" && screenId) await window.assignOne(screenId);
     if (button.dataset.action === "stop-screen" && screenId) await window.stopOne(screenId);
     if (button.dataset.action === "copy-player-link" && screenId) await window.copyPlayerLink(screenId);
+    if (button.dataset.action === "copy-pairing-code" && screenId) await window.copyPairingCode(screenId);
     if (button.dataset.action === "regen-code" && screenId) await window.regeneratePairingCode(screenId);
     if (button.dataset.action === "edit-screen" && screenId) await window.editScreen(screenId);
     if (button.dataset.action === "delete-screen" && screenId) await window.deleteScreen(screenId);
@@ -1516,6 +1558,12 @@ document.addEventListener("click", async (event) => {
   } catch (error) {
     toast(error.message);
   }
+});
+
+document.addEventListener("change", (event) => {
+  const selector = event.target.closest("[data-screen-select]");
+  if (!selector) return;
+  window.toggleScreenSelection(Number(selector.dataset.screenSelect), selector.checked);
 });
 
 $("#auth-form").onsubmit = async (event) => {

@@ -42,8 +42,8 @@ let liveActive = false;
 let liveReconnectTimer = null;
 let livePlaybackWatchdog = null;
 let liveLastVideoTime = -1;
-const instanceId = localStorage.getItem("openmarquee-instance") || crypto.randomUUID();
-localStorage.setItem("openmarquee-instance", instanceId);
+const instanceId = sessionStorage.getItem("openmarquee-instance") || crypto.randomUUID();
+sessionStorage.setItem("openmarquee-instance", instanceId);
 
 input.value = code;
 if (code) localStorage.setItem("openmarquee-code", code);
