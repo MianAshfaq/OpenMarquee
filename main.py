@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -13,6 +14,8 @@ import secrets
 import shutil
 import sqlite3
 import subprocess
+import sys
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -27,24 +30,26 @@ try:
 except Exception:  # noqa: BLE001
     PdfReader = None
 
-ROOT = Path(__file__).parent
+SOURCE_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
+ROOT = (Path(os.getenv("LOCALAPPDATA", Path.home())) / "OpenMarquee") if getattr(sys, "frozen", False) else Path(__file__).parent
 DB_PATH = ROOT / "data" / "openmarquee.db"
 UPLOADS = ROOT / "uploads"
-STATIC = ROOT / "static"
+STATIC = SOURCE_ROOT / "static"
 SECRET_PATH = ROOT / "data" / ".secret_key"
 BOOTSTRAP_PATH = ROOT / "data" / "admin-bootstrap.txt"
 LOG_DIR = ROOT / "logs"
-LOG_DIR.mkdir(exist_ok=True)
-UPLOADS.mkdir(exist_ok=True)
-DB_PATH.parent.mkdir(exist_ok=True)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+UPLOADS.mkdir(parents=True, exist_ok=True)
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="OpenMarquee", version="0.1.0")
+app = FastAPI(title="OpenMarquee", version="0.3.0")
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 app.mount("/media", StaticFiles(directory=UPLOADS), name="media")
 APP_STARTED_AT = int(time.time())
 PING_CACHE: dict[str, tuple[int, bool]] = {}
 SESSION_COOKIE = "openmarquee_session"
 SESSION_TTL_SECONDS = 60 * 60 * 12
+SESSION_IDLE_SECONDS = 60 * 10
 MAX_UPLOAD_BYTES = int(os.getenv("OPENMARQUEE_MAX_UPLOAD_BYTES", str(1024 * 1024 * 1024)))
 ADMIN_USERNAME = os.getenv("OPENMARQUEE_ADMIN_USERNAME", "admin").strip() or "admin"
 TRUSTED_HOSTS = {host.strip().lower() for host in os.getenv("OPENMARQUEE_TRUSTED_HOSTS", "").split(",") if host.strip()}
@@ -168,6 +173,12 @@ class LiveShareHub:
             if screen_id in wanted:
                 await self.send(socket, {"type": "manifest-refresh"})
 
+    async def prepare_shutdown(self) -> None:
+        for session_id in set(self.targets.values()):
+            await self.stop_session(session_id)
+        for socket in list(self.players.values()):
+            await self.send(socket, {"type": "system-shutdown"})
+
 
 LIVE_SHARE = LiveShareHub()
 
@@ -268,6 +279,13 @@ def init_db() -> None:
                 last_seen INTEGER NOT NULL,
                 created_at INTEGER NOT NULL,
                 PRIMARY KEY(screen_id, instance_id)
+            );
+            CREATE TABLE IF NOT EXISTS admin_sessions (
+                token_hash TEXT PRIMARY KEY,
+                username TEXT NOT NULL,
+                last_seen INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
             );
             """
         )
@@ -372,7 +390,8 @@ def log_event(actor: str, action: str, target_type: str, target_name: str | None
 
 def issue_session_token(username: str) -> str:
     expires_at = int(time.time()) + SESSION_TTL_SECONDS
-    payload = f"{username}|{expires_at}"
+    nonce = secrets.token_urlsafe(18)
+    payload = f"{username}|{expires_at}|{nonce}"
     signature = hmac.new(SECRET_KEY.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
     return base64.urlsafe_b64encode(f"{payload}|{signature}".encode("utf-8")).decode("ascii")
 
@@ -382,8 +401,8 @@ def decode_session_token(token: str | None) -> str | None:
         return None
     try:
         raw = base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8")
-        username, expires_at_raw, signature = raw.split("|", 2)
-        payload = f"{username}|{expires_at_raw}"
+        username, expires_at_raw, nonce, signature = raw.split("|", 3)
+        payload = f"{username}|{expires_at_raw}|{nonce}"
     except Exception:  # noqa: BLE001
         return None
     expected_signature = hmac.new(SECRET_KEY.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
@@ -396,10 +415,46 @@ def decode_session_token(token: str | None) -> str | None:
     return username
 
 
+def session_token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def register_admin_session(token: str, username: str) -> None:
+    now = int(time.time())
+    with db() as conn:
+        conn.execute("DELETE FROM admin_sessions WHERE expires_at<? OR last_seen<?", (now, now - SESSION_IDLE_SECONDS))
+        conn.execute(
+            "INSERT INTO admin_sessions(token_hash,username,last_seen,expires_at,created_at) VALUES(?,?,?,?,?)",
+            (session_token_hash(token), username, now, now + SESSION_TTL_SECONDS, now),
+        )
+
+
+def validate_admin_session(token: str | None, touch: bool = True) -> str | None:
+    username = decode_session_token(token)
+    if not username or not token:
+        return None
+    now = int(time.time())
+    token_hash = session_token_hash(token)
+    session_rows = rows("SELECT username,last_seen,expires_at FROM admin_sessions WHERE token_hash=?", (token_hash,))
+    if not session_rows:
+        return None
+    session = session_rows[0]
+    if int(session["expires_at"]) < now or now - int(session["last_seen"]) >= SESSION_IDLE_SECONDS:
+        with db() as conn:
+            conn.execute("DELETE FROM admin_sessions WHERE token_hash=?", (token_hash,))
+        return None
+    if touch:
+        with db() as conn:
+            conn.execute("UPDATE admin_sessions SET last_seen=? WHERE token_hash=?", (now, token_hash))
+    return username
+
+
 def set_session_cookie(response: Response, username: str) -> None:
+    token = issue_session_token(username)
+    register_admin_session(token, username)
     response.set_cookie(
         SESSION_COOKIE,
-        issue_session_token(username),
+        token,
         httponly=True,
         samesite="lax",
         secure=COOKIE_SECURE,
@@ -412,7 +467,8 @@ def clear_session_cookie(response: Response) -> None:
 
 
 def require_admin(request: Request) -> str:
-    username = decode_session_token(request.cookies.get(SESSION_COOKIE))
+    touch = request.headers.get("x-openmarquee-passive") != "1"
+    username = validate_admin_session(request.cookies.get(SESSION_COOKIE), touch=touch)
     if not username:
         raise HTTPException(401, "Please sign in")
     return username
@@ -875,7 +931,7 @@ def local_displays(_admin: str = Depends(require_admin)) -> dict:
 
 @app.get("/api/auth/session")
 def auth_session(request: Request) -> dict:
-    username = decode_session_token(request.cookies.get(SESSION_COOKIE))
+    username = validate_admin_session(request.cookies.get(SESSION_COOKIE), touch=False)
     return {
         "authenticated": bool(username),
         "username": username or ADMIN_USERNAME,
@@ -909,14 +965,24 @@ def auth_login(
 
 
 @app.post("/api/auth/logout")
-def auth_logout(response: Response, _admin: str = Depends(require_admin)) -> dict:
+def auth_logout(response: Response, request: Request, _admin: str = Depends(require_admin)) -> dict:
+    token = request.cookies.get(SESSION_COOKIE)
+    if token:
+        with db() as conn:
+            conn.execute("DELETE FROM admin_sessions WHERE token_hash=?", (session_token_hash(token),))
     clear_session_cookie(response)
     log_event(_admin, "logout", "auth", _admin)
     return {"ok": True}
 
 
+@app.post("/api/auth/touch")
+def auth_touch(_admin: str = Depends(require_admin)) -> dict:
+    return {"ok": True, "idle_timeout_seconds": SESSION_IDLE_SECONDS}
+
+
 @app.post("/api/auth/password")
 def auth_password_change(
+    request: Request,
     current_password: str = Form(...),
     new_password: str = Form(...),
     _admin: str = Depends(require_admin),
@@ -927,6 +993,10 @@ def auth_password_change(
     if len(new_password.strip()) < 8:
         raise HTTPException(400, "New password must be at least 8 characters")
     write_setting("admin_password_hash", hash_password(new_password.strip()))
+    current_token = request.cookies.get(SESSION_COOKIE)
+    current_hash = session_token_hash(current_token) if current_token else ""
+    with db() as conn:
+        conn.execute("DELETE FROM admin_sessions WHERE token_hash<>?", (current_hash,))
     BOOTSTRAP_PATH.unlink(missing_ok=True)
     log_event(_admin, "change_password", "auth", _admin)
     return {"ok": True}
@@ -1363,11 +1433,42 @@ def create_folder(name: str = Form(...), _admin: str = Depends(require_admin)) -
     cleaned_name = name.strip()
     if not cleaned_name:
         raise HTTPException(400, "Folder name is required")
-    with db() as conn:
-        cursor = conn.execute("INSERT INTO media_folders(name, created_at) VALUES(?, ?)", (cleaned_name, int(time.time())))
-        folder_id = cursor.lastrowid
+    try:
+        with db() as conn:
+            cursor = conn.execute("INSERT INTO media_folders(name, created_at) VALUES(?, ?)", (cleaned_name, int(time.time())))
+            folder_id = cursor.lastrowid
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(409, "A folder with this name already exists") from exc
     log_event(_admin, "create", "folder", cleaned_name, {"folder_id": folder_id})
     return {"id": folder_id, "name": cleaned_name}
+
+
+@app.put("/api/folders/{folder_id}")
+def rename_folder(folder_id: int, name: str = Form(...), _admin: str = Depends(require_admin)) -> dict:
+    cleaned_name = name.strip()
+    if not cleaned_name:
+        raise HTTPException(400, "Folder name is required")
+    try:
+        with db() as conn:
+            cursor = conn.execute("UPDATE media_folders SET name=? WHERE id=?", (cleaned_name, folder_id))
+            if cursor.rowcount == 0:
+                raise HTTPException(404, "Folder not found")
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(409, "A folder with this name already exists") from exc
+    log_event(_admin, "rename", "folder", cleaned_name, {"folder_id": folder_id})
+    return {"ok": True, "name": cleaned_name}
+
+
+@app.delete("/api/folders/{folder_id}")
+def delete_folder(folder_id: int, _admin: str = Depends(require_admin)) -> dict:
+    folder_rows = rows("SELECT name FROM media_folders WHERE id=?", (folder_id,))
+    if not folder_rows:
+        raise HTTPException(404, "Folder not found")
+    with db() as conn:
+        conn.execute("UPDATE media SET folder_id=NULL WHERE folder_id=?", (folder_id,))
+        conn.execute("DELETE FROM media_folders WHERE id=?", (folder_id,))
+    log_event(_admin, "delete", "folder", folder_rows[0]["name"], {"folder_id": folder_id})
+    return {"ok": True, "moved_to_unfiled": True}
 
 
 @app.post("/api/settings/profiles")
@@ -1385,12 +1486,27 @@ def update_profiles_setting(profiles: str = Form("[]"), _admin: str = Depends(re
 
 @app.put("/api/media/{media_id}/folder")
 def update_media_folder(media_id: int, folder_id: int = Form(0), _admin: str = Depends(require_admin)) -> dict:
+    if folder_id:
+        require_existing_ids("media_folders", [folder_id], "folder")
     with db() as conn:
         cursor = conn.execute("UPDATE media SET folder_id=? WHERE id=?", (folder_id or None, media_id))
         if cursor.rowcount == 0:
             raise HTTPException(404, "Media not found")
     log_event(_admin, "move", "media", f"media:{media_id}", {"folder_id": folder_id or None})
     return {"ok": True}
+
+
+@app.put("/api/media/{media_id}/name")
+def rename_media(media_id: int, name: str = Form(...), _admin: str = Depends(require_admin)) -> dict:
+    cleaned_name = name.strip()
+    if not cleaned_name:
+        raise HTTPException(400, "Media name is required")
+    with db() as conn:
+        cursor = conn.execute("UPDATE media SET name=? WHERE id=?", (cleaned_name, media_id))
+        if cursor.rowcount == 0:
+            raise HTTPException(404, "Media not found")
+    log_event(_admin, "rename", "media", cleaned_name, {"media_id": media_id})
+    return {"ok": True, "name": cleaned_name}
 
 
 @app.delete("/api/media/{media_id}")
@@ -1781,7 +1897,7 @@ def player_manifest(request: Request, code: str, instance: str = "") -> dict:
 
 @app.websocket("/ws/live/admin")
 async def live_admin_socket(websocket: WebSocket) -> None:
-    username = decode_session_token(websocket.cookies.get(SESSION_COOKIE))
+    username = validate_admin_session(websocket.cookies.get(SESSION_COOKIE), touch=True)
     if not username:
         await websocket.close(code=4401)
         return
@@ -1791,7 +1907,13 @@ async def live_admin_socket(websocket: WebSocket) -> None:
     await websocket.send_json({"type": "registered", "session_id": session_id})
     try:
         while True:
-            message = await websocket.receive_json()
+            try:
+                message = await asyncio.wait_for(websocket.receive_json(), timeout=30)
+            except TimeoutError:
+                if not validate_admin_session(websocket.cookies.get(SESSION_COOKIE), touch=False):
+                    await websocket.close(code=4401)
+                    break
+                continue
             message_type = message.get("type")
             if message_type == "live-start":
                 requested = {int(value) for value in message.get("screen_ids", []) if str(value).isdigit()}
@@ -1860,3 +1982,20 @@ async def live_player_socket(websocket: WebSocket, code: str = "", instance: str
 @app.get("/api/rss")
 def rss_proxy(url: str) -> dict:
     return parse_rss_feed(normalize_source_url(url))
+
+
+@app.post("/api/system/shutdown")
+async def shutdown_system(request: Request, _admin: str = Depends(require_admin)) -> dict:
+    await LIVE_SHARE.prepare_shutdown()
+    log_event(_admin, "shutdown", "system", "OpenMarquee", {"ip": remote_ip(request)})
+    timer = threading.Timer(1.2, lambda: os._exit(0))
+    timer.daemon = True
+    timer.start()
+    return {"ok": True, "message": "OpenMarquee is shutting down"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    threading.Timer(1.2, lambda: __import__("webbrowser").open("http://localhost:8787")).start()
+    uvicorn.run(app, host="0.0.0.0", port=8787, log_config=None, access_log=False)

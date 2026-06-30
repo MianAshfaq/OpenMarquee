@@ -75,6 +75,7 @@
         <button class="icon-control" id="change-password" aria-label="Change password" data-tooltip="Change password"><i class="fa-solid fa-key"></i></button>
         <button class="icon-control" id="mfa-button" aria-label="MFA settings" data-tooltip="MFA settings"><i class="fa-solid fa-shield-halved"></i><span id="mfa-state" class="sr-only">MFA off</span></button>
         <div class="session-pill"><i class="fa-solid fa-user-shield"></i><span id="session-user">admin</span></div>
+        <button class="icon-control danger" id="shutdown-software" aria-label="Shut down OpenMarquee" data-tooltip="Shut down software"><i class="fa-solid fa-power-off"></i></button>
         <button class="icon-control danger" id="logout-button" aria-label="Sign out" data-tooltip="Sign out"><i class="fa-solid fa-right-from-bracket"></i></button>
       </div>
     </header>
@@ -115,6 +116,7 @@
         <div><p class="eyebrow">CONTENT</p><h2>Media library</h2></div>
         <div class="toolbar">
           <button class="icon-control" id="new-folder" aria-label="Add folder" data-tooltip="Add folder"><i class="fa-solid fa-folder-plus"></i></button>
+          <button class="icon-control" id="manage-folders" aria-label="Manage folders" data-tooltip="Rename or delete folders"><i class="fa-solid fa-folder-tree"></i></button>
           <button class="icon-control" id="new-text" aria-label="Create text ad" data-tooltip="Create text ad"><i class="fa-solid fa-font"></i></button>
           <button class="icon-control" id="new-countdown" aria-label="Create countdown" data-tooltip="Create countdown"><i class="fa-solid fa-hourglass-half"></i></button>
           <button class="icon-control" id="new-source" aria-label="Add URL source" data-tooltip="Add URL source"><i class="fa-solid fa-link"></i></button>
@@ -226,6 +228,7 @@
     </form>
   </dialog>
   <div id="toast"></div>
+  <div id="shutdown-overlay" hidden><img class="brand-logo" src="/static/logo.svg" alt="OpenMarquee"><strong>OpenMarquee stopped safely</strong><span>Live sharing and player connections were closed. Use the Desktop shortcut to start the software again.</span></div>
   <script src="/static/app.js"></script>
 </body>
 </html>

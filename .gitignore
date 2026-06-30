@@ -9,3 +9,9 @@ logs/
 uploads/*
 !uploads/.gitkeep
 .env
+build/
+dist/
+release/
+*.spec
+packaging/*.png
+packaging/*.ico

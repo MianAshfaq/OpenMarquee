@@ -8,6 +8,8 @@
 - Store secrets in environment variables, not in source files
 - Keep `OPENMARQUEE_COOKIE_SECURE=1` in production
 - Keep the app behind TLS before enabling secure cookies
+- Confirm the 10-minute inactivity policy matches the operating environment
+- Restrict the shutdown endpoint to trusted administrator networks at the reverse proxy or firewall when possible
 
 ## Live screen sharing
 

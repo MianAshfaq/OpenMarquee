@@ -10,6 +10,10 @@ const state = {
   auth: { authenticated: false, username: "", mfa_enabled: false },
 };
 const selectedScreens = new Set();
+const ADMIN_IDLE_MS = 10 * 60 * 1000;
+let lastAdminActivity = Date.now();
+let lastSessionTouch = Date.now();
+let logoutInProgress = false;
 const liveShare = {
   selected: new Set(),
   stream: null,
@@ -277,15 +281,35 @@ function setAuthState(session) {
   $("#bootstrap-note").textContent = "Sign in with your administrator account.";
 }
 
+function markAdminActivity() {
+  lastAdminActivity = Date.now();
+  if (!state.auth.authenticated || Date.now() - lastSessionTouch < 45000) return;
+  lastSessionTouch = Date.now();
+  fetch("/api/auth/touch", { method: "POST" }).catch(() => {});
+}
+
+async function logoutAdmin(reason = "Signed out") {
+  if (logoutInProgress) return;
+  logoutInProgress = true;
+  try {
+    if (liveShare.active) await stopLiveShare(false);
+    await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
+    setAuthState({ authenticated: false, username: "", mfa_enabled: state.auth.mfa_enabled });
+    toast(reason);
+  } finally {
+    logoutInProgress = false;
+  }
+}
+
 async function checkSession() {
   const session = await api("/api/auth/session");
   setAuthState(session);
   if (session.authenticated) await refresh();
 }
 
-async function refresh() {
+async function refresh(passive = false) {
   if (!state.auth.authenticated) return;
-  const next = await api("/api/dashboard");
+  const next = await api("/api/dashboard", passive ? { headers: { "X-OpenMarquee-Passive": "1" } } : {});
   state.media = next.media || [];
   state.folders = next.folders || [];
   state.playlists = (next.playlists || []).map((playlist) => ({
@@ -419,6 +443,7 @@ function mediaCard(media) {
         <p>${escapeHtml(mediaTypeLabel(media.kind))} - ${media.size ? bytes(media.size) : "Remote source"}</p>
         <div class="card-actions">
           ${editable ? iconAction("edit-media", "media-id", media.id, "fa-pen", "Edit media") : ""}
+          ${iconAction("rename-media", "media-id", media.id, "fa-i-cursor", "Rename media")}
           ${iconAction("move-media", "media-id", media.id, "fa-folder-open", "Move to folder")}
           ${iconAction("delete-media", "media-id", media.id, "fa-trash", "Delete media", true)}
         </div>
@@ -554,6 +579,9 @@ function render() {
     helpCard("10. How do I keep the system secure?", "Use a strong admin password, enable MFA, deploy behind HTTPS and Nginx, and keep the player devices managed. Only authenticated admins can change playlists, screens, and security settings.", "Reports and Activity help you track failed logins, pairing changes, content actions, and operator behavior."),
     helpCard("11. How do I share my screen live?", "Open Live Share, select one or more destination players, then choose Entire display, Application window, or Browser tab. Connected Windows monitors are shown on the page and selected securely in the browser picker. The playlist resumes automatically when sharing stops.", "Use localhost on the server computer or HTTPS remotely. For sound, enable Share system audio in Chrome or Edge; browser-tab audio is usually the most reliable."),
     helpCard("12. How do I present a local PowerPoint or document?", "In Live Share, select destination screens and choose Present local file. PowerPoint, Word, and Excel files are converted to PDF by Microsoft Office or LibreOffice, then published directly. PDF pages and presentation slides advance automatically.", "Images, videos, audio, PDF, and HTML are also accepted directly. The uploaded file remains in the Media Library for reuse."),
+    helpCard("13. How do folders and media names work?", "Open Media Library to rename any media item. Use the folder-management icon beside Add folder to rename or delete folders. Deleting a folder never deletes its media; those items move safely to Unfiled.", "Media deletion remains a separate confirmed action and also removes stale references from playlists."),
+    helpCard("14. When does the administrator sign out?", "The Admin Panel signs out after 10 minutes without keyboard, mouse, or touch activity. Passive dashboard updates do not keep the session alive. Active live sharing is stopped before an inactivity logout.", "This rule is enforced by both the browser and server session record."),
+    helpCard("15. How do I shut down OpenMarquee?", "Only a signed-in administrator can use the power icon in the header. Confirming shutdown stops live sharing, notifies connected players, closes the local service, and displays a safe offline message.", "The computer itself remains on. Start OpenMarquee again from its Desktop shortcut."),
   ];
 
   $("#overview-screens").innerHTML = state.screens.map(overviewScreenCard).join("") || '<p class="empty">No screens paired yet.</p>';
@@ -924,6 +952,48 @@ function openFolderBuilder() {
     await api("/api/folders", { method: "POST", body: formData });
     toast("Folder created");
     await refresh();
+  });
+}
+
+function openFolderManager() {
+  showModal(`
+    <p class="eyebrow">MEDIA ORGANIZATION</p>
+    <h2>Manage folders</h2>
+    <p class="modal-copy">Rename folders here. Deleting a folder keeps its media and moves those files to Unfiled.</p>
+    <div class="folder-manager-list">
+      ${state.folders.length ? state.folders.map((folder) => `
+        <div class="folder-manager-row">
+          <i class="fa-solid fa-folder"></i>
+          <input name="folder_${folder.id}" value="${escapeHtml(folder.name)}" aria-label="Folder name">
+          <button type="button" class="icon-action danger" data-delete-folder="${folder.id}" aria-label="Delete ${escapeHtml(folder.name)}" title="Delete folder"><i class="fa-solid fa-trash"></i></button>
+        </div>
+      `).join("") : '<p class="empty">No custom folders yet.</p>'}
+    </div>
+    <div class="modal-footer">${modalCancelButton()}${state.folders.length ? '<button class="primary">Save names</button>' : ""}</div>
+  `, async (formData) => {
+    for (const folder of state.folders) {
+      const name = String(formData.get(`folder_${folder.id}`) || "").trim();
+      if (name && name !== folder.name) {
+        const payload = new FormData();
+        payload.set("name", name);
+        await api(`/api/folders/${folder.id}`, { method: "PUT", body: payload });
+      }
+    }
+    toast("Folder names updated");
+    await refresh();
+  }, (dialog) => {
+    dialog.querySelectorAll("[data-delete-folder]").forEach((button) => {
+      button.onclick = async () => {
+        const folderId = Number(button.dataset.deleteFolder);
+        const folder = state.folders.find((item) => item.id === folderId);
+        if (!folder || !confirm(`Delete folder ${folder.name}? Media will move to Unfiled.`)) return;
+        await api(`/api/folders/${folderId}`, { method: "DELETE" });
+        if (String(state.activeFolderId) === String(folderId)) state.activeFolderId = "all";
+        dialog.close();
+        toast("Folder deleted; media moved to Unfiled");
+        await refresh();
+      };
+    });
   });
 }
 
@@ -1454,6 +1524,20 @@ async function openPasswordModal() {
   });
 }
 
+function openShutdownModal() {
+  showModal(`
+    <p class="eyebrow">ADMIN CONTROL</p>
+    <h2>Shut down OpenMarquee?</h2>
+    <p class="modal-copy">This stops live sharing, closes player connections, and shuts down the local OpenMarquee service. It does not shut down this computer. Start it again from the Desktop shortcut.</p>
+    <div class="stack-note"><i class="fa-solid fa-triangle-exclamation"></i> Only an authenticated administrator can perform this action.</div>
+    <div class="modal-footer">${modalCancelButton()}<button class="primary danger-solid"><i class="fa-solid fa-power-off"></i><span>Stop and shut down</span></button></div>
+  `, async () => {
+    await api("/api/system/shutdown", { method: "POST" });
+    $("#modal").close();
+    $("#shutdown-overlay").hidden = false;
+  });
+}
+
 async function openMfaModal() {
   if (state.auth.mfa_enabled) {
     await showModal(`
@@ -1506,6 +1590,21 @@ window.editMedia = async (mediaId) => {
   if (media.kind === "countdown") return openCountdownBuilder(media);
 };
 
+window.renameMedia = async (mediaId) => {
+  const media = state.media.find((item) => item.id === mediaId);
+  if (!media) return;
+  showModal(`
+    <p class="eyebrow">MEDIA DETAILS</p>
+    <h2>Rename media</h2>
+    <div class="field"><label>Display name</label><input name="name" value="${escapeHtml(media.name)}" required></div>
+    <div class="modal-footer">${modalCancelButton()}<button class="primary">Save name</button></div>
+  `, async (formData) => {
+    await api(`/api/media/${mediaId}/name`, { method: "PUT", body: formData });
+    toast("Media renamed");
+    await refresh();
+  });
+};
+
 window.moveMedia = async (mediaId) => {
   const media = state.media.find((item) => item.id === mediaId);
   if (!media) return;
@@ -1551,6 +1650,7 @@ document.addEventListener("click", async (event) => {
     if (button.dataset.action === "edit-screen" && screenId) await window.editScreen(screenId);
     if (button.dataset.action === "delete-screen" && screenId) await window.deleteScreen(screenId);
     if (button.dataset.action === "edit-media" && mediaId) await window.editMedia(mediaId);
+    if (button.dataset.action === "rename-media" && mediaId) await window.renameMedia(mediaId);
     if (button.dataset.action === "delete-media" && mediaId) await window.removeMedia(mediaId);
     if (button.dataset.action === "move-media" && mediaId) await window.moveMedia(mediaId);
     if (button.dataset.action === "edit-playlist" && playlistId) await window.editPlaylist(playlistId);
@@ -1572,6 +1672,8 @@ $("#auth-form").onsubmit = async (event) => {
   try {
     await api("/api/auth/login", { method: "POST", body: formData });
     $("#auth-form").reset();
+    lastAdminActivity = Date.now();
+    lastSessionTouch = Date.now();
     await checkSession();
     toast("Signed in");
   } catch (error) {
@@ -1579,14 +1681,11 @@ $("#auth-form").onsubmit = async (event) => {
   }
 };
 
-$("#logout-button").onclick = async () => {
-  await api("/api/auth/logout", { method: "POST" });
-  setAuthState({ authenticated: false, username: "", mfa_enabled: state.auth.mfa_enabled });
-  toast("Signed out");
-};
+$("#logout-button").onclick = () => logoutAdmin("Signed out");
 
 $("#change-password").onclick = () => openPasswordModal();
 $("#mfa-button").onclick = () => openMfaModal();
+$("#shutdown-software").onclick = openShutdownModal;
 
 $("#file-input").onchange = async (event) => {
   for (const file of event.target.files) {
@@ -1608,6 +1707,7 @@ $("#new-screen").onclick = openCreateScreen;
 $("#new-playlist").onclick = openPlaylistBuilder;
 $("#new-source").onclick = openSourceBuilder;
 $("#new-folder").onclick = openFolderBuilder;
+$("#manage-folders").onclick = openFolderManager;
 $("#new-text").onclick = openTextBuilder;
 $("#new-countdown").onclick = () => openCountdownBuilder();
 $("#discover-screens").onclick = openDiscovery;
@@ -1652,4 +1752,15 @@ checkSession().catch((error) => toast(error.message)).finally(() => {
   document.body.classList.remove("app-loading");
 });
 $("#live-secure-note").hidden = window.isSecureContext || ["localhost", "127.0.0.1", "::1"].includes(location.hostname);
-setInterval(() => refresh().catch(() => {}), 30000);
+["pointerdown", "keydown", "touchstart"].forEach((eventName) => {
+  document.addEventListener(eventName, markAdminActivity, { passive: true });
+});
+setInterval(() => {
+  if (!state.auth.authenticated) return;
+  const idleMs = Date.now() - lastAdminActivity;
+  if (idleMs >= ADMIN_IDLE_MS) {
+    logoutAdmin("Signed out after 10 minutes of inactivity");
+    return;
+  }
+  refresh(idleMs > 60000).catch(() => {});
+}, 30000);

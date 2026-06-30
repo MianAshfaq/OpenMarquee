@@ -279,6 +279,20 @@ function createIdleScene() {
   return scene;
 }
 
+function showSystemOffline() {
+  clearTimeout(timer);
+  window.clearInterval(livePlaybackWatchdog);
+  liveActive = false;
+  livePeer?.close();
+  livePeer = null;
+  const scene = createIdleScene();
+  scene.querySelector(".message strong").textContent = "OpenMarquee is offline";
+  scene.querySelector(".message span").textContent = "The administrator safely shut down the signage server.";
+  scene.querySelector(".message small").textContent = "Playback reconnects automatically after the server starts again.";
+  finishPlayerBoot(false);
+  transitionScene(scene);
+}
+
 function attemptPlay(mediaElement) {
   const promise = mediaElement.play?.();
   if (promise && typeof promise.catch === "function") promise.catch(() => {});
@@ -431,6 +445,8 @@ function connectLiveSocket() {
         stopLivePlayback();
       } else if (message.type === "manifest-refresh" && !liveActive) {
         await sync(true);
+      } else if (message.type === "system-shutdown") {
+        showSystemOffline();
       }
     } catch (error) {
       sendPlayerSignal({ type: "player-error", detail: String(error?.message || error) });

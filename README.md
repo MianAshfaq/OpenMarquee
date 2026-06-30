@@ -22,12 +22,23 @@ smart TVs, Android players, Raspberry Pi devices, and web browsers.
 - Windows source-monitor detection with separate source display and destination player selection
 - Screen heartbeat and online/offline monitoring
 - Admin authentication with password change and optional 10-second MFA TOTP codes
+- Server-enforced 10-minute administrator inactivity logout
+- Admin-only safe shutdown that stops live sharing and notifies connected players
+- Rename media and rename or delete folders without deleting their contents
 - Security headers and protected admin APIs
 - Health endpoint, audit logs, and overview reports
 - Docker, `.env` example, and Nginx reverse proxy sample config
 - SQLite storage with no external cloud dependency
 
 ## Run on Windows
+
+### Recommended installer
+
+Download `OpenMarquee-Setup-v0.3.0.exe` from the latest GitHub release and run it. The installer includes the application runtime, adds OpenMarquee to the Desktop and Start Menu, and launches the local dashboard. Python is not required.
+
+The portable `OpenMarquee-v0.3.0-portable.zip` is also available for users who do not want installation. Extract the ZIP and run `OpenMarquee.exe`. Writable data is stored under `%LOCALAPPDATA%\OpenMarquee`.
+
+### Run from source
 
 ```powershell
 ./Start-OpenMarquee.ps1
@@ -50,6 +61,16 @@ http://YOUR-PC-IP:8787/player?code=ABC123
 ```
 
 Use the screen pairing code in place of `ABC123`.
+
+The same paired code can be opened in multiple browsers or tabs. Every player receives the same assigned content, while only an authenticated administrator can stop sharing, change playback, or shut down OpenMarquee.
+
+## Administrator controls
+
+- The Admin Panel signs out after 10 minutes without keyboard, mouse, or touch activity.
+- The header power button safely stops live sharing and shuts down OpenMarquee, not the computer.
+- Restart the software from the OpenMarquee Desktop shortcut.
+- Media names can be edited from each media card.
+- Folder names and deletion are available from the folder-management button. Deleting a folder moves its media to Unfiled.
 
 Managed player notes and Raspberry Pi autostart setup live in:
 
