@@ -30,6 +30,13 @@ try:
 except Exception:  # noqa: BLE001
     PdfReader = None
 
+WINDOWS_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+
+
+def run_background_command(command: list[str], **kwargs) -> subprocess.CompletedProcess:
+    """Run helper tools without flashing a console window on Windows."""
+    return subprocess.run(command, creationflags=WINDOWS_NO_WINDOW, **kwargs)
+
 SOURCE_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
 ROOT = (Path(os.getenv("LOCALAPPDATA", Path.home())) / "OpenMarquee") if getattr(sys, "frozen", False) else Path(__file__).parent
 DB_PATH = ROOT / "data" / "openmarquee.db"
@@ -42,7 +49,7 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS.mkdir(parents=True, exist_ok=True)
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="OpenMarquee", version="0.3.0")
+app = FastAPI(title="OpenMarquee", version="0.3.1")
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 app.mount("/media", StaticFiles(directory=UPLOADS), name="media")
 APP_STARTED_AT = int(time.time())
@@ -692,7 +699,7 @@ def screen_network_reachable(ip_address: str | None) -> tuple[bool, str]:
     if cached and now - cached[0] < 20:
         return cached[1], "reachable" if cached[1] else "unreachable"
     try:
-        result = subprocess.run(
+        result = run_background_command(
             ["ping", "-n", "1", "-w", "900", normalized],
             capture_output=True,
             text=True,
@@ -710,7 +717,7 @@ def lookup_arp_entry(ip_address: str | None) -> tuple[str | None, str | None]:
     if not ip_address:
         return None, None
     try:
-        subprocess.run(
+        run_background_command(
             ["ping", "-n", "1", "-w", "700", ip_address],
             capture_output=True,
             text=True,
@@ -720,7 +727,7 @@ def lookup_arp_entry(ip_address: str | None) -> tuple[str | None, str | None]:
     except (OSError, subprocess.TimeoutExpired):
         pass
     try:
-        result = subprocess.run(["arp", "-a", ip_address], capture_output=True, text=True, check=False, timeout=5)
+        result = run_background_command(["arp", "-a", ip_address], capture_output=True, text=True, check=False, timeout=5)
     except (OSError, subprocess.TimeoutExpired):
         return None, None
     for raw_line in result.stdout.splitlines():
@@ -747,7 +754,7 @@ def auto_brand_for(ip_address: str | None, current_brand: str) -> tuple[str | No
 def discover_network_devices() -> list[dict]:
     devices: dict[str, dict] = {}
     try:
-        result = subprocess.run(["arp", "-a"], capture_output=True, text=True, check=False, timeout=8)
+        result = run_background_command(["arp", "-a"], capture_output=True, text=True, check=False, timeout=8)
     except (OSError, subprocess.TimeoutExpired):
         return []
     seen = {row["ip_address"]: row["id"] for row in rows("SELECT id, ip_address FROM screens WHERE ip_address IS NOT NULL AND TRIM(ip_address) <> ''")}
@@ -915,7 +922,7 @@ def local_displays(_admin: str = Depends(require_admin)) -> dict:
         "width=$_.Bounds.Width;height=$_.Bounds.Height}} | ConvertTo-Json -Compress"
     )
     try:
-        result = subprocess.run(
+        result = run_background_command(
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
             capture_output=True,
             text=True,
@@ -1133,7 +1140,7 @@ def convert_office_to_pdf(source: Path, destination: Path) -> None:
     suffix = source.suffix.lower()
     soffice = shutil.which("soffice") or shutil.which("libreoffice")
     if soffice:
-        result = subprocess.run(
+        result = run_background_command(
             [soffice, "--headless", "--convert-to", "pdf", "--outdir", str(destination.parent), str(source)],
             capture_output=True,
             text=True,
@@ -1173,7 +1180,7 @@ def convert_office_to_pdf(source: Path, destination: Path) -> None:
         else:
             script = ""
         if script:
-            result = subprocess.run(
+            result = run_background_command(
                 ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
                 capture_output=True,
                 text=True,

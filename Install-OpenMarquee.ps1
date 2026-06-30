@@ -11,8 +11,8 @@ $desktop = [Environment]::GetFolderPath('Desktop')
 $shortcutPath = Join-Path $desktop 'OpenMarquee.lnk'
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($shortcutPath)
-$shortcut.TargetPath = 'powershell.exe'
-$shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$Root\Start-OpenMarquee.ps1`""
+$shortcut.TargetPath = "$Root\.venv\Scripts\pythonw.exe"
+$shortcut.Arguments = "`"$Root\main.py`""
 $shortcut.WorkingDirectory = $Root
 $shortcut.Description = 'Open OpenMarquee digital signage'
 $shortcut.Save()

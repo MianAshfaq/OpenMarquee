@@ -40,6 +40,14 @@ Recommended monitors:
 - disk space for `uploads/`, `data/`, and `logs/`
 - reverse proxy certificate expiry
 
+## Windows release trust
+
+- Keep the mandatory installer Terms and Conditions current
+- Run the release build's Microsoft Defender scan before publication
+- Publish `SHA256SUMS.txt` beside every installer and portable archive
+- Sign `OpenMarquee.exe` and the setup executable with a recognized OV or EV code-signing certificate when one is available
+- Timestamp signatures so they remain verifiable after certificate renewal
+
 ## Firewall
 
 Typical inbound rules:

@@ -1,0 +1,29 @@
+OPENMARQUEE TERMS AND CONDITIONS
+
+Last updated: June 30, 2026
+
+Please read these terms before installing or using OpenMarquee. By accepting these terms and installing the software, you agree to the following conditions.
+
+1. OPEN-SOURCE LICENSE
+OpenMarquee is provided under the MIT License. You may use, copy, modify, merge, publish, distribute, sublicense, or sell copies subject to the copyright and license notice included with the software.
+
+2. AUTHORIZED USE
+You are responsible for deploying OpenMarquee only on computers, displays, networks, and accounts that you own or are authorized to manage. You must protect administrator passwords, MFA secrets, pairing codes, and network access.
+
+3. CONTENT RESPONSIBILITY
+You are responsible for ensuring that images, videos, documents, websites, streams, audio, and other content displayed through OpenMarquee are lawful and properly licensed. Third-party services may apply their own terms, availability rules, and embedding restrictions.
+
+4. NETWORK AND SECURITY
+OpenMarquee is self-hosted software. You are responsible for operating-system updates, firewall rules, HTTPS certificates, backups, reverse-proxy configuration, and secure remote access. Do not expose an unprotected installation directly to the public internet.
+
+5. PRIVACY
+OpenMarquee stores its application data locally unless you configure external services or URLs. Network addresses, device details, activity logs, and uploaded media may be stored on the OpenMarquee server for administration and reporting.
+
+6. NO WARRANTY
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
+
+7. LIMITATION OF LIABILITY
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE AUTHORS AND CONTRIBUTORS ARE NOT LIABLE FOR CLAIMS, DAMAGES, DATA LOSS, DISPLAY INTERRUPTION, SECURITY INCIDENTS, OR OTHER LIABILITY ARISING FROM USE OF THE SOFTWARE.
+
+8. ACCEPTANCE
+Select "I accept the agreement" to continue installation. If you do not agree, cancel the installer and do not install or use OpenMarquee.
