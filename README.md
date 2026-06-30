@@ -18,6 +18,8 @@ smart TVs, Android players, Raspberry Pi devices, and web browsers.
 - Edit screens, delete screens, stop playback, and assign playlists to one, many, or all screens
 - Full-screen web player with smoother transitions and hidden control chrome
 - Low-latency WebRTC screen sharing to one, selected, or all paired displays, with system audio when the browser provides it
+- Direct local-file presentation for PowerPoint, Word, Excel, PDF, images, video, audio, and HTML; Office documents convert to PDF when Microsoft Office or LibreOffice is installed
+- Windows source-monitor detection with separate source display and destination player selection
 - Screen heartbeat and online/offline monitoring
 - Admin authentication with password change and optional 10-second MFA TOTP codes
 - Security headers and protected admin APIs

@@ -164,9 +164,24 @@
         <div><p class="eyebrow">LIVE BROADCAST</p><h2>Share your screen</h2></div>
         <div class="toolbar">
           <button class="secondary" id="live-select-all"><i class="fa-solid fa-check-double"></i><span>Select all</span></button>
-          <button class="primary" id="start-live-share"><i class="fa-solid fa-display"></i><span>Start sharing</span></button>
           <button class="danger" id="stop-live-share" disabled><i class="fa-solid fa-stop"></i><span>Stop live share</span></button>
         </div>
+      </div>
+      <div id="live-secure-note" class="secure-context-note" hidden>
+        <i class="fa-solid fa-lock"></i>
+        <span><strong>Browser sharing is blocked on this address.</strong> Because OpenMarquee is running on this computer, reopen it through localhost to select your connected displays.</span>
+        <button class="primary" id="open-localhost"><i class="fa-solid fa-arrow-up-right-from-square"></i><span>Open localhost</span></button>
+      </div>
+      <div class="local-display-band">
+        <div><p class="eyebrow">CONNECTED TO THIS COMPUTER</p><h3>Source displays</h3></div>
+        <div id="local-display-list" class="local-display-list"><span>Detecting connected displays...</span></div>
+      </div>
+      <div class="share-source-grid">
+        <button class="share-source" data-share-surface="monitor"><i class="fa-solid fa-display"></i><strong>Entire display</strong><span>Select either connected monitor or LCD from the browser picker.</span></button>
+        <button class="share-source" data-share-surface="window"><i class="fa-regular fa-window-maximize"></i><strong>Application window</strong><span>Share only PowerPoint Slide Show, Word, Excel, or another application.</span></button>
+        <button class="share-source" data-share-surface="browser"><i class="fa-brands fa-chrome"></i><strong>Browser tab</strong><span>Best choice for a web presentation or tab audio.</span></button>
+        <button class="share-source" id="present-local-file"><i class="fa-solid fa-file-arrow-up"></i><strong>Present local file</strong><span>Upload PowerPoint, documents, PDF, image, video, audio, or HTML directly.</span></button>
+        <input id="live-file-input" type="file" accept="image/*,video/*,audio/*,application/pdf,text/html,.ppt,.pptx,.pps,.ppsx,.doc,.docx,.rtf,.xls,.xlsx,.xlsm" hidden>
       </div>
       <div class="live-share-layout">
         <div class="live-preview-shell">
@@ -174,12 +189,12 @@
           <div id="live-preview-empty" class="live-preview-empty">
             <i class="fa-solid fa-display"></i>
             <strong>Your live preview appears here</strong>
-            <span>Choose one or more screens, then share a display, window, or browser tab. Enable system audio in the browser picker when sound is required.</span>
+            <span>First select destination players on the right. Then choose an entire connected display, one application window, one browser tab, or a local presentation file.</span>
           </div>
           <div class="live-status-row"><span id="live-share-status" class="badge">Ready</span><span id="live-viewer-count">0 viewers</span></div>
         </div>
         <div>
-          <div class="section-title compact"><div><p class="eyebrow">TARGETS</p><h3>LED/LCD screens</h3></div></div>
+          <div class="section-title compact"><div><p class="eyebrow">DESTINATIONS</p><h3>Paired LED/LCD players</h3><p class="section-help">Physical monitors are source choices in the browser popup. Destination LCDs appear here after each one is added and paired in Screens.</p></div></div>
           <div id="live-screen-list" class="live-screen-list"></div>
         </div>
       </div>

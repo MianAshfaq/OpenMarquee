@@ -16,6 +16,9 @@ const liveShare = {
   socket: null,
   sessionId: "",
   peers: new Map(),
+  filePresentation: false,
+  presentationScreenIds: [],
+  active: false,
 };
 const industryProfiles = [
   ["retail", "Retail"],
@@ -279,6 +282,7 @@ async function refresh() {
     if (!state.screens.some((screen) => screen.id === id)) selectedScreens.delete(id);
   }
   render();
+  loadLocalDisplays().catch(() => {});
   if (state.auth.authenticated && !state.settings.profiles_configured) {
     openProfileSetup();
   }
@@ -512,7 +516,8 @@ function render() {
     helpCard("8. How does offline or LAN mode work?", "If the server, player, and screens are on the same LAN or Wi-Fi, local uploads, text ads, countdowns, playlists, and pairing continue to work without internet. Internet is only required for remote web URLs such as YouTube, dashboards, or cloud pages.", "For strong offline performance, prefer uploaded images, video, PDF, audio, and text assets over external URLs."),
     helpCard("9. How do deployment profiles work?", "At first sign-in you can choose one or more deployment profiles such as retail, hospital, office, hotel, or events. Each screen can then be assigned one profile to match its content style and operating context.", "This makes it easier to organize different LCD fleets under one server without mixing use cases."),
     helpCard("10. How do I keep the system secure?", "Use a strong admin password, enable MFA, deploy behind HTTPS and Nginx, and keep the player devices managed. Only authenticated admins can change playlists, screens, and security settings.", "Reports and Activity help you track failed logins, pairing changes, content actions, and operator behavior."),
-    helpCard("11. How do I share my screen live?", "Open Live Share, select one or more paired screens, and press Start sharing. Choose a display, window, or browser tab in the browser picker. The live feed temporarily replaces the playlist and the playlist resumes automatically when sharing stops.", "For sound, enable Share system audio in Chrome or Edge. A browser tab is usually the most reliable choice for tab audio. Remote admin access must use HTTPS."),
+    helpCard("11. How do I share my screen live?", "Open Live Share, select one or more destination players, then choose Entire display, Application window, or Browser tab. Connected Windows monitors are shown on the page and selected securely in the browser picker. The playlist resumes automatically when sharing stops.", "Use localhost on the server computer or HTTPS remotely. For sound, enable Share system audio in Chrome or Edge; browser-tab audio is usually the most reliable."),
+    helpCard("12. How do I present a local PowerPoint or document?", "In Live Share, select destination screens and choose Present local file. PowerPoint, Word, and Excel files are converted to PDF by Microsoft Office or LibreOffice, then published directly. PDF pages and presentation slides advance automatically.", "Images, videos, audio, PDF, and HTML are also accepted directly. The uploaded file remains in the Media Library for reuse."),
   ];
 
   $("#overview-screens").innerHTML = state.screens.map(overviewScreenCard).join("") || '<p class="empty">No screens paired yet.</p>';
@@ -1188,21 +1193,36 @@ function renderLiveTargets() {
   });
   list.innerHTML = state.screens.map((screen) => `
     <label class="live-target">
-      <input type="checkbox" data-live-screen="${screen.id}" ${liveShare.selected.has(screen.id) ? "checked" : ""} ${liveShare.stream ? "disabled" : ""}>
+      <input type="checkbox" data-live-screen="${screen.id}" ${liveShare.selected.has(screen.id) ? "checked" : ""} ${liveShare.active ? "disabled" : ""}>
       <span><strong>${escapeHtml(screen.name)}</strong><small>${escapeHtml(screen.brand || "Unknown brand")} - ${escapeHtml(screen.ip_address || "Player link")}</small></span>
       <em>${screen.online ? "Player online" : "Player offline"}</em>
     </label>
   `).join("") || '<p class="empty">Add and pair a screen before starting a live share.</p>';
 }
 
+async function loadLocalDisplays() {
+  const container = $("#local-display-list");
+  if (!container || !state.auth.authenticated) return;
+  const result = await api("/api/local/displays");
+  const displays = result.displays || [];
+  container.innerHTML = displays.length ? displays.map((display, index) => `
+    <span class="local-display-chip">
+      <strong>${display.primary ? "Primary" : `Display ${index + 1}`} - ${escapeHtml(display.device || "Connected screen")}</strong>
+      <span>${Number(display.width || 0)} x ${Number(display.height || 0)}${display.primary ? " - Main display" : ""}</span>
+    </span>
+  `).join("") : '<span>Display names will appear in the browser sharing picker.</span>';
+}
+
 function setLiveShareUi(active, message = "Ready") {
-  $("#start-live-share").disabled = active;
+  liveShare.active = active;
   $("#stop-live-share").disabled = !active;
   $("#live-select-all").disabled = active;
+  $$(".share-source").forEach((button) => { button.disabled = active; });
   $("#live-share-status").textContent = message;
   $("#live-share-status").className = `badge ${active ? "online" : ""}`;
-  $("#live-share-preview").style.display = active ? "block" : "none";
-  $("#live-preview-empty").style.display = active ? "none" : "grid";
+  const showStream = active && !liveShare.filePresentation;
+  $("#live-share-preview").style.display = showStream ? "block" : "none";
+  $("#live-preview-empty").style.display = showStream ? "none" : "grid";
   renderLiveTargets();
 }
 
@@ -1281,11 +1301,11 @@ function connectLiveAdminSocket() {
   });
 }
 
-async function startLiveShare() {
+async function startLiveShare(displaySurface = "monitor") {
   if (!liveShare.selected.size) throw new Error("Select at least one target screen");
   if (!navigator.mediaDevices?.getDisplayMedia) throw new Error("Screen sharing requires HTTPS or localhost in a supported browser");
   const stream = await navigator.mediaDevices.getDisplayMedia({
-    video: { frameRate: { ideal: 30, max: 60 } },
+    video: { displaySurface, frameRate: { ideal: 30, max: 60 } },
     audio: true,
   });
   liveShare.stream = stream;
@@ -1294,7 +1314,8 @@ async function startLiveShare() {
   try {
     await connectLiveAdminSocket();
     sendLiveSignal({ type: "live-start", screen_ids: [...liveShare.selected] });
-    setLiveShareUi(true, stream.getAudioTracks().length ? "Live with audio" : "Live - no audio selected");
+    const sourceLabel = { monitor: "display", window: "window", browser: "browser tab" }[displaySurface] || "screen";
+    setLiveShareUi(true, stream.getAudioTracks().length ? `Live ${sourceLabel} with audio` : `Live ${sourceLabel} - no audio selected`);
     toast(`Live share started for ${liveShare.selected.size} screen${liveShare.selected.size === 1 ? "" : "s"}`);
   } catch (error) {
     await stopLiveShare(false);
@@ -1303,6 +1324,13 @@ async function startLiveShare() {
 }
 
 async function stopLiveShare(notify = true) {
+  if (liveShare.filePresentation && liveShare.presentationScreenIds.length) {
+    await api("/api/screens/stop-presentation", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ screen_ids: liveShare.presentationScreenIds }),
+    }).catch(() => {});
+  }
   sendLiveSignal({ type: "live-stop" });
   liveShare.peers.forEach((peer) => peer.close());
   liveShare.peers.clear();
@@ -1315,9 +1343,40 @@ async function stopLiveShare(notify = true) {
   }
   $("#live-share-preview").srcObject = null;
   liveShare.sessionId = "";
+  liveShare.filePresentation = false;
+  liveShare.presentationScreenIds = [];
+  $("#live-preview-empty strong").textContent = "Your live preview appears here";
   updateLiveViewerCount();
   setLiveShareUi(false, "Ready");
   if (notify) toast("Live share stopped; playlists resumed");
+}
+
+async function presentLocalFile(file) {
+  if (!file) return;
+  if (!liveShare.selected.size) throw new Error("Select at least one destination screen");
+  const screenIds = [...liveShare.selected];
+  setLiveShareUi(true, "Uploading presentation...");
+  try {
+    const upload = new FormData();
+    upload.append("file", file);
+    const media = await api("/api/media", { method: "POST", body: upload });
+    await api("/api/screens/present-media", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ media_id: media.id, screen_ids: screenIds }),
+    });
+    liveShare.filePresentation = true;
+    liveShare.presentationScreenIds = screenIds;
+    $("#live-preview-empty strong").textContent = file.name;
+    setLiveShareUi(true, `Presenting ${file.name}`);
+    toast(`Presenting on ${screenIds.length} screen${screenIds.length === 1 ? "" : "s"}`);
+    await refresh();
+  } catch (error) {
+    liveShare.filePresentation = false;
+    liveShare.presentationScreenIds = [];
+    setLiveShareUi(false, "Ready");
+    throw error;
+  }
 }
 
 async function openPasswordModal() {
@@ -1495,7 +1554,26 @@ $("#live-select-all").onclick = () => {
   if (!allSelected) state.screens.forEach((screen) => liveShare.selected.add(screen.id));
   renderLiveTargets();
 };
-$("#start-live-share").onclick = () => startLiveShare().catch((error) => toast(error.message));
+$$('[data-share-surface]').forEach((button) => {
+  button.onclick = () => startLiveShare(button.dataset.shareSurface).catch((error) => toast(error.message));
+});
+$("#present-local-file").onclick = () => {
+  if (!liveShare.selected.size) return toast("Select at least one destination screen");
+  $("#live-file-input").click();
+};
+$("#live-file-input").onchange = async (event) => {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  try {
+    await presentLocalFile(file);
+  } catch (error) {
+    toast(error.message);
+  }
+};
+$("#open-localhost").onclick = () => {
+  const port = location.port ? `:${location.port}` : "";
+  location.href = `${location.protocol}//localhost${port}${location.pathname}${location.search}${location.hash}`;
+};
 $("#stop-live-share").onclick = () => stopLiveShare();
 $("#select-all").onchange = (event) => {
   if (event.target.checked) state.screens.forEach((screen) => selectedScreens.add(screen.id));
@@ -1506,4 +1584,5 @@ $("#select-all").onchange = (event) => {
 checkSession().catch((error) => toast(error.message)).finally(() => {
   document.body.classList.remove("app-loading");
 });
+$("#live-secure-note").hidden = window.isSecureContext || ["localhost", "127.0.0.1", "::1"].includes(location.hostname);
 setInterval(() => refresh().catch(() => {}), 30000);

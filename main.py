@@ -162,6 +162,12 @@ class LiveShareHub:
                 if player_screen_id == screen_id:
                     await self.send(socket, {"type": "live-stop", "session_id": session_id})
 
+    async def refresh_screens(self, screen_ids: list[int]) -> None:
+        wanted = set(screen_ids)
+        for (screen_id, _instance_id), socket in list(self.players.items()):
+            if screen_id in wanted:
+                await self.send(socket, {"type": "manifest-refresh"})
+
 
 LIVE_SHARE = LiveShareHub()
 
@@ -226,6 +232,7 @@ def init_db() -> None:
                 name TEXT NOT NULL,
                 code TEXT NOT NULL UNIQUE,
                 playlist_id INTEGER,
+                override_media_id INTEGER,
                 orientation TEXT NOT NULL DEFAULT 'landscape',
                 brand TEXT NOT NULL DEFAULT 'unknown',
                 model TEXT,
@@ -281,6 +288,8 @@ def init_db() -> None:
             conn.execute("ALTER TABLE screens ADD COLUMN vendor_name TEXT")
         if "profile" not in columns:
             conn.execute("ALTER TABLE screens ADD COLUMN profile TEXT")
+        if "override_media_id" not in columns:
+            conn.execute("ALTER TABLE screens ADD COLUMN override_media_id INTEGER")
         if "paired_at" not in columns:
             conn.execute("ALTER TABLE screens ADD COLUMN paired_at INTEGER")
         if "code_expires_at" not in columns:
@@ -813,6 +822,31 @@ def health() -> dict:
     }
 
 
+@app.get("/api/local/displays")
+def local_displays(_admin: str = Depends(require_admin)) -> dict:
+    if os.name != "nt":
+        return {"displays": [], "detection": "Browser picker"}
+    script = (
+        "Add-Type -AssemblyName System.Windows.Forms;"
+        "[System.Windows.Forms.Screen]::AllScreens | ForEach-Object {"
+        "[PSCustomObject]@{device=$_.DeviceName;primary=$_.Primary;x=$_.Bounds.X;y=$_.Bounds.Y;"
+        "width=$_.Bounds.Width;height=$_.Bounds.Height}} | ConvertTo-Json -Compress"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        payload = json.loads(result.stdout.strip() or "[]") if result.returncode == 0 else []
+        displays = payload if isinstance(payload, list) else [payload]
+    except Exception:  # noqa: BLE001
+        displays = []
+    return {"displays": displays, "detection": "Windows display configuration"}
+
+
 @app.get("/api/auth/session")
 def auth_session(request: Request) -> dict:
     username = decode_session_token(request.cookies.get(SESSION_COOKIE))
@@ -999,9 +1033,67 @@ def dashboard(_admin: str = Depends(require_admin)) -> dict:
     return {"media": media, "folders": folders, "playlists": playlists, "screens": screens, "logs": recent_logs, "reports": reports, "settings": settings}
 
 
+def convert_office_to_pdf(source: Path, destination: Path) -> None:
+    suffix = source.suffix.lower()
+    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    if soffice:
+        result = subprocess.run(
+            [soffice, "--headless", "--convert-to", "pdf", "--outdir", str(destination.parent), str(source)],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        generated = destination.parent / f"{source.stem}.pdf"
+        if result.returncode == 0 and generated.exists():
+            generated.replace(destination)
+            return
+
+    if os.name == "nt":
+        source_ps = str(source.resolve()).replace("'", "''")
+        destination_ps = str(destination.resolve()).replace("'", "''")
+        if suffix in {".ppt", ".pptx", ".pps", ".ppsx"}:
+            script = (
+                "$app=New-Object -ComObject PowerPoint.Application;$app.AutomationSecurity=3;"
+                "$app.Visible=-1;"
+                f"$doc=$app.Presentations.Open('{source_ps}',-1,0,0);"
+                f"$doc.SaveAs('{destination_ps}',32);"
+                "$doc.Close();$app.Quit()"
+            )
+        elif suffix in {".doc", ".docx", ".rtf"}:
+            script = (
+                "$app=New-Object -ComObject Word.Application;$app.Visible=$false;$app.AutomationSecurity=3;"
+                f"$doc=$app.Documents.Open('{source_ps}',0,$true);"
+                f"$doc.SaveAs([ref]'{destination_ps}',[ref]17);"
+                "$doc.Close();$app.Quit()"
+            )
+        elif suffix in {".xls", ".xlsx", ".xlsm"}:
+            script = (
+                "$app=New-Object -ComObject Excel.Application;$app.Visible=$false;$app.DisplayAlerts=$false;$app.AutomationSecurity=3;"
+                f"$doc=$app.Workbooks.Open('{source_ps}',0,$true);"
+                f"$doc.ExportAsFixedFormat(0,'{destination_ps}');"
+                "$doc.Close($false);$app.Quit()"
+            )
+        else:
+            script = ""
+        if script:
+            result = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            )
+            if result.returncode == 0 and destination.exists():
+                return
+    raise HTTPException(400, "This Office file could not be converted. Install Microsoft Office or LibreOffice on the OpenMarquee server.")
+
+
 @app.post("/api/media")
 def upload_media(folder_id: int = Form(0), file: UploadFile = File(...), _admin: str = Depends(require_admin)) -> dict:
     content_type = file.content_type or mimetypes.guess_type(file.filename or "")[0] or ""
+    suffix = Path(file.filename or "upload").suffix.lower()
+    office_suffixes = {".ppt", ".pptx", ".pps", ".ppsx", ".doc", ".docx", ".rtf", ".xls", ".xlsx", ".xlsm"}
     if content_type.startswith("image/"):
         kind = "image"
     elif content_type.startswith("video/"):
@@ -1012,9 +1104,10 @@ def upload_media(folder_id: int = Form(0), file: UploadFile = File(...), _admin:
         kind = "audio"
     elif content_type == "text/html":
         kind = "html"
+    elif suffix in office_suffixes:
+        kind = "office"
     else:
-        raise HTTPException(400, "Supported uploads: images, videos, PDF, audio, and HTML.")
-    suffix = Path(file.filename or "upload").suffix.lower()
+        raise HTTPException(400, "Supported uploads: images, videos, PDF, PowerPoint, Word, Excel, audio, and HTML.")
     filename = f"{secrets.token_hex(12)}{suffix}"
     destination = UPLOADS / filename
     with destination.open("wb") as output:
@@ -1022,6 +1115,17 @@ def upload_media(folder_id: int = Form(0), file: UploadFile = File(...), _admin:
     if destination.stat().st_size > MAX_UPLOAD_BYTES:
         destination.unlink(missing_ok=True)
         raise HTTPException(400, f"File is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit")
+    if kind == "office":
+        pdf_filename = f"{secrets.token_hex(12)}.pdf"
+        pdf_destination = UPLOADS / pdf_filename
+        try:
+            convert_office_to_pdf(destination, pdf_destination)
+        finally:
+            destination.unlink(missing_ok=True)
+        destination = pdf_destination
+        filename = pdf_filename
+        kind = "pdf"
+
     chosen_folder_id = folder_id or None
     metadata = {}
     if kind == "pdf":
@@ -1437,7 +1541,7 @@ def regenerate_pairing_code(screen_id: int, _admin: str = Depends(require_admin)
 
 
 @app.post("/api/screens/assign-many")
-def assign_many_screens(payload: dict, _admin: str = Depends(require_admin)) -> dict:
+async def assign_many_screens(payload: dict, _admin: str = Depends(require_admin)) -> dict:
     screen_ids = [int(screen_id) for screen_id in payload.get("screen_ids", [])]
     playlist_id = int(payload.get("playlist_id") or 0)
     if not screen_ids:
@@ -1446,38 +1550,70 @@ def assign_many_screens(payload: dict, _admin: str = Depends(require_admin)) -> 
         raise HTTPException(400, "Choose a playlist")
     with db() as conn:
         conn.executemany(
-            "UPDATE screens SET playlist_id=? WHERE id=?",
+            "UPDATE screens SET playlist_id=?, override_media_id=NULL WHERE id=?",
             [(playlist_id, screen_id) for screen_id in screen_ids],
         )
     log_event(_admin, "assign_many", "screen", f"{len(screen_ids)} screens", {"playlist_id": playlist_id, "screen_ids": screen_ids})
+    await LIVE_SHARE.refresh_screens(screen_ids)
     return {"ok": True, "updated": len(screen_ids)}
 
 
 @app.post("/api/screens/{screen_id}/assign")
-def assign_playlist(screen_id: int, playlist_id: int = Form(...), _admin: str = Depends(require_admin)) -> dict:
+async def assign_playlist(screen_id: int, playlist_id: int = Form(...), _admin: str = Depends(require_admin)) -> dict:
     with db() as conn:
-        conn.execute("UPDATE screens SET playlist_id=? WHERE id=?", (playlist_id, screen_id))
+        conn.execute("UPDATE screens SET playlist_id=?, override_media_id=NULL WHERE id=?", (playlist_id, screen_id))
     log_event(_admin, "assign", "screen", f"screen:{screen_id}", {"playlist_id": playlist_id})
+    await LIVE_SHARE.refresh_screens([screen_id])
     return {"ok": True}
 
 
 @app.post("/api/screens/stop-many")
-def stop_many_screens(payload: dict, _admin: str = Depends(require_admin)) -> dict:
+async def stop_many_screens(payload: dict, _admin: str = Depends(require_admin)) -> dict:
     screen_ids = [int(screen_id) for screen_id in payload.get("screen_ids", [])]
     if not screen_ids:
         raise HTTPException(400, "Select at least one screen")
     with db() as conn:
-        conn.executemany("UPDATE screens SET playlist_id=NULL WHERE id=?", [(screen_id,) for screen_id in screen_ids])
+        conn.executemany("UPDATE screens SET playlist_id=NULL, override_media_id=NULL WHERE id=?", [(screen_id,) for screen_id in screen_ids])
     log_event(_admin, "stop_many", "screen", f"{len(screen_ids)} screens", {"screen_ids": screen_ids})
+    await LIVE_SHARE.refresh_screens(screen_ids)
     return {"ok": True, "updated": len(screen_ids)}
 
 
 @app.post("/api/screens/{screen_id}/stop")
-def stop_screen(screen_id: int, _admin: str = Depends(require_admin)) -> dict:
+async def stop_screen(screen_id: int, _admin: str = Depends(require_admin)) -> dict:
     with db() as conn:
-        conn.execute("UPDATE screens SET playlist_id=NULL WHERE id=?", (screen_id,))
+        conn.execute("UPDATE screens SET playlist_id=NULL, override_media_id=NULL WHERE id=?", (screen_id,))
     log_event(_admin, "stop", "screen", f"screen:{screen_id}", {"screen_id": screen_id})
+    await LIVE_SHARE.refresh_screens([screen_id])
     return {"ok": True}
+
+
+@app.post("/api/screens/present-media")
+async def present_media(payload: dict, _admin: str = Depends(require_admin)) -> dict:
+    screen_ids = [int(screen_id) for screen_id in payload.get("screen_ids", [])]
+    media_id = int(payload.get("media_id") or 0)
+    if not screen_ids:
+        raise HTTPException(400, "Select at least one screen")
+    media_rows = rows("SELECT id, name FROM media WHERE id=?", (media_id,))
+    if not media_rows:
+        raise HTTPException(404, "Media not found")
+    with db() as conn:
+        conn.executemany("UPDATE screens SET override_media_id=? WHERE id=?", [(media_id, screen_id) for screen_id in screen_ids])
+    log_event(_admin, "present_media", "screen", media_rows[0]["name"], {"media_id": media_id, "screen_ids": screen_ids})
+    await LIVE_SHARE.refresh_screens(screen_ids)
+    return {"ok": True, "updated": len(screen_ids)}
+
+
+@app.post("/api/screens/stop-presentation")
+async def stop_presentation(payload: dict, _admin: str = Depends(require_admin)) -> dict:
+    screen_ids = [int(screen_id) for screen_id in payload.get("screen_ids", [])]
+    if not screen_ids:
+        raise HTTPException(400, "Select at least one screen")
+    with db() as conn:
+        conn.executemany("UPDATE screens SET override_media_id=NULL WHERE id=?", [(screen_id,) for screen_id in screen_ids])
+    log_event(_admin, "stop_presentation", "screen", f"{len(screen_ids)} screens", {"screen_ids": screen_ids})
+    await LIVE_SHARE.refresh_screens(screen_ids)
+    return {"ok": True, "updated": len(screen_ids)}
 
 
 @app.put("/api/screens/{screen_id}")
@@ -1571,7 +1707,17 @@ def player_manifest(request: Request, code: str, instance: str = "") -> dict:
             )
     items: list[dict] = []
     playlist_meta = {"layout_mode": "full", "fit_mode": "contain", "transition_mode": "fade", "transition_modes": ["fade"]}
-    if screen["playlist_id"]:
+    if screen.get("override_media_id"):
+        override_rows = rows("SELECT * FROM media WHERE id=?", (screen["override_media_id"],))
+        if override_rows:
+            media = override_rows[0]
+            items.append({
+                **media,
+                "metadata": json.loads(media.get("metadata") or "{}"),
+                "duration": 10,
+                "url": media["source_url"] or f"/media/{media['filename']}",
+            })
+    elif screen["playlist_id"]:
         playlists = rows("SELECT items, layout_mode, fit_mode, transition_mode, transition_modes FROM playlists WHERE id=?", (screen["playlist_id"],))
         if playlists:
             transition_modes_raw = playlists[0].get("transition_modes") or json.dumps([playlists[0].get("transition_mode") or "fade"])

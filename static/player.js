@@ -205,7 +205,13 @@ function layoutSize() {
 }
 
 function sceneMediaDuration(items) {
-  return Math.max(...items.map((item) => Number(item.duration || 10)));
+  return Math.max(...items.map((item) => {
+    const duration = Number(item.duration || 10);
+    if (["pdf", "powerpoint"].includes(item.kind)) {
+      return duration * Math.max(1, Number(item.metadata?.page_count || 1));
+    }
+    return duration;
+  }));
 }
 
 function playbackNeedsTimer(items) {
@@ -305,6 +311,8 @@ function connectLiveSocket() {
         else livePeer.pendingCandidates.push(message.candidate);
       } else if (message.type === "live-stop") {
         stopLivePlayback();
+      } else if (message.type === "manifest-refresh" && !liveActive) {
+        await sync(true);
       }
     } catch (error) {
       sendPlayerSignal({ type: "player-error", detail: String(error?.message || error) });
