@@ -133,6 +133,23 @@ const runtimeOptions = [
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
+function readableApiError(detail, fallback = "Request failed") {
+  if (typeof detail === "string" && detail.trim()) return detail;
+  if (Array.isArray(detail)) {
+    const messages = detail.map((issue) => {
+      if (!issue || typeof issue !== "object") return String(issue || "").trim();
+      const location = Array.isArray(issue.loc) ? issue.loc.filter((part) => !["body", "query", "path"].includes(String(part))).join(" ") : "";
+      const message = String(issue.msg || issue.message || "Invalid value").replace(/^Value error,\s*/i, "");
+      return location ? `${location}: ${message}` : message;
+    }).filter(Boolean);
+    if (messages.length) return messages.join("; ");
+  }
+  if (detail && typeof detail === "object") {
+    return String(detail.message || detail.msg || fallback);
+  }
+  return fallback;
+}
+
 async function api(url, options = {}) {
   const response = await fetch(url, options);
   if (!response.ok) {
@@ -141,7 +158,7 @@ async function api(url, options = {}) {
     }
     let detail = "Request failed";
     try {
-      detail = (await response.json()).detail || detail;
+      detail = readableApiError((await response.json()).detail, detail);
     } catch {}
     throw new Error(detail);
   }
@@ -1709,7 +1726,7 @@ $("#new-playlist").onclick = openPlaylistBuilder;
 $("#new-source").onclick = openSourceBuilder;
 $("#new-folder").onclick = openFolderBuilder;
 $("#manage-folders").onclick = openFolderManager;
-$("#new-text").onclick = openTextBuilder;
+$("#new-text").onclick = () => openTextBuilder();
 $("#new-countdown").onclick = () => openCountdownBuilder();
 $("#discover-screens").onclick = openDiscovery;
 $("#assign-selected").onclick = () => openBulkAssign(false);

@@ -49,7 +49,7 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS.mkdir(parents=True, exist_ok=True)
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="OpenMarquee", version="0.3.1")
+app = FastAPI(title="OpenMarquee", version="0.3.2")
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 app.mount("/media", StaticFiles(directory=UPLOADS), name="media")
 APP_STARTED_AT = int(time.time())
@@ -1276,7 +1276,7 @@ def create_url_media(
 
 @app.post("/api/library/text")
 def create_text_media(
-    name: str = Form(...),
+    name: str = Form(""),
     text: str = Form(...),
     body: str = Form(""),
     badge: str = Form(""),
@@ -1309,15 +1309,16 @@ def create_text_media(
         "align": normalize_text_align(align),
         "text_case": normalize_text_case(text_case),
     }
+    effective_name = name.strip() or "Text slide"
     filename = f"text-{secrets.token_hex(8)}.json"
     with db() as conn:
         cursor = conn.execute(
             "INSERT INTO media(name, filename, kind, size, folder_id, source_url, metadata, created_at) VALUES(?,?,?,?,?,?,?,?)",
-            (name.strip() or "Text slide", filename, "text", len(cleaned_text.encode("utf-8")), folder_id or None, None, json.dumps(metadata), int(time.time())),
+            (effective_name, filename, "text", len(cleaned_text.encode("utf-8")), folder_id or None, None, json.dumps(metadata), int(time.time())),
         )
         media_id = cursor.lastrowid
-    log_event(_admin, "create_text", "media", name.strip() or "Text slide", {"media_id": media_id})
-    return {"id": media_id, "name": name, "filename": filename, "kind": "text", "metadata": metadata}
+    log_event(_admin, "create_text", "media", effective_name, {"media_id": media_id})
+    return {"id": media_id, "name": effective_name, "filename": filename, "kind": "text", "metadata": metadata}
 
 
 @app.post("/api/library/countdown")
@@ -1363,7 +1364,7 @@ def create_countdown_media(
 @app.put("/api/media/{media_id}/rich")
 def update_rich_media(
     media_id: int,
-    name: str = Form(...),
+    name: str = Form(""),
     text: str = Form(""),
     body: str = Form(""),
     badge: str = Form(""),

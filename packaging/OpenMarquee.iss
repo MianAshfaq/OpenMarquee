@@ -1,5 +1,5 @@
 #define AppName "OpenMarquee"
-#define AppVersion "0.3.1"
+#define AppVersion "0.3.2"
 
 [Setup]
 AppId={{1A7D02CF-5F9F-47A2-956A-CF21BD618F50}
@@ -10,7 +10,7 @@ AppPublisherURL=https://github.com/MianAshfaq/OpenMarquee
 AppSupportURL=https://github.com/MianAshfaq/OpenMarquee/issues
 AppUpdatesURL=https://github.com/MianAshfaq/OpenMarquee/releases
 AppCopyright=Copyright (c) 2026 Muhammad Ashfaq and OpenMarquee contributors
-VersionInfoVersion=0.3.1.0
+VersionInfoVersion=0.3.2.0
 VersionInfoCompany=Muhammad Ashfaq
 VersionInfoDescription=OpenMarquee digital signage installer
 VersionInfoProductName=OpenMarquee

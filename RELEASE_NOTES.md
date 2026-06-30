@@ -1,23 +1,18 @@
-# OpenMarquee 0.3.1
+# OpenMarquee 0.3.2
 
-This reliability update replaces every obsolete installer artifact and improves Windows packaging behavior.
+This update fixes text-ad creation from the Media Library.
 
-## Highlights
+## Fixes
 
-- All network scans, display detection, and Office conversion helper processes run without flashing command windows.
-- The modern Windows installer displays mandatory Terms and Conditions that must be accepted before installation.
-- Application and installer files include OpenMarquee product, version, publisher, and copyright metadata.
-- The installer creates windowless Desktop and Start Menu shortcuts and includes standard Windows uninstallation support.
-- A root-level download guide explains why compiled files are attached to GitHub Releases instead of committed to the source tree.
-- The build rejects unexpected or obsolete installer formats before release.
-- Microsoft Defender scanning and a published SHA-256 checksum manifest are part of the release build.
-- Administrator-only shutdown, 10-minute inactivity logout, media renaming, and folder management remain included.
+- The Create text ad button now opens a new campaign instead of incorrectly treating the click event as an existing media record.
+- Text ads can be created with a blank slide name and automatically use the name `Text slide`.
+- Existing text campaigns can be saved after their name is cleared.
+- Structured API validation errors now display readable field messages instead of `[object Object]`.
+- Text create and edit flows were verified through both the API and the actual Media Library dialog.
 
 ## Downloads
 
-- `OpenMarquee-Setup-v0.3.1.exe`: recommended Windows installer.
-- `OpenMarquee-v0.3.1-portable.zip`: extract and run `OpenMarquee.exe` without installation.
+- `OpenMarquee-Setup-v0.3.2.exe`: recommended Windows installer.
+- `OpenMarquee-v0.3.2-portable.zip`: extract and run `OpenMarquee.exe` without installation.
 
-## Windows Trust
-
-The release is built from public source and scanned before publication. The binaries are not digitally signed in this release. Windows SmartScreen reputation across all computers requires a recognized code-signing certificate.
+The release build is scanned with Microsoft Defender and includes `SHA256SUMS.txt`. The binaries are not digitally signed; broad Windows SmartScreen reputation requires a recognized code-signing certificate.

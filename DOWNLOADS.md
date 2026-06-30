@@ -4,8 +4,8 @@ Compiled applications are published under GitHub Releases rather than committed 
 
 ## Windows
 
-- [Recommended installer](https://github.com/MianAshfaq/OpenMarquee/releases/latest/download/OpenMarquee-Setup-v0.3.1.exe)
-- [Portable ZIP](https://github.com/MianAshfaq/OpenMarquee/releases/latest/download/OpenMarquee-v0.3.1-portable.zip)
+- [Recommended installer](https://github.com/MianAshfaq/OpenMarquee/releases/latest/download/OpenMarquee-Setup-v0.3.2.exe)
+- [Portable ZIP](https://github.com/MianAshfaq/OpenMarquee/releases/latest/download/OpenMarquee-v0.3.2-portable.zip)
 - [SHA-256 checksums](https://github.com/MianAshfaq/OpenMarquee/releases/latest/download/SHA256SUMS.txt)
 - [Release page](https://github.com/MianAshfaq/OpenMarquee/releases/latest)
 

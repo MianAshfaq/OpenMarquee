@@ -34,9 +34,9 @@ smart TVs, Android players, Raspberry Pi devices, and web browsers.
 
 ### Recommended installer
 
-Download `OpenMarquee-Setup-v0.3.1.exe` from the latest GitHub release and run it. The installer includes the application runtime, adds OpenMarquee to the Desktop and Start Menu, and launches the local dashboard. Python is not required.
+Download `OpenMarquee-Setup-v0.3.2.exe` from the latest GitHub release and run it. The installer includes the application runtime, adds OpenMarquee to the Desktop and Start Menu, and launches the local dashboard. Python is not required.
 
-The portable `OpenMarquee-v0.3.1-portable.zip` is also available for users who do not want installation. Extract the ZIP and run `OpenMarquee.exe`. Writable data is stored under `%LOCALAPPDATA%\OpenMarquee`.
+The portable `OpenMarquee-v0.3.2-portable.zip` is also available for users who do not want installation. Extract the ZIP and run `OpenMarquee.exe`. Writable data is stored under `%LOCALAPPDATA%\OpenMarquee`.
 
 The installer displays the OpenMarquee Terms and Conditions and requires acceptance before installation. Release assets include `SHA256SUMS.txt` for integrity verification. The current binaries are Microsoft Defender scanned but not digitally signed; broad Windows SmartScreen reputation requires a recognized publisher code-signing certificate.
 
